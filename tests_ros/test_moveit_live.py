@@ -11,9 +11,11 @@ ros-jazzy-moveit-kinematics ros-jazzy-moveit-configs-utils ros-jazzy-moveit-reso
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import shutil
+import signal
 import subprocess
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -137,6 +139,19 @@ async def _wait_until_move_group_is_ready(timeout: float) -> str | None:
         await backend.shutdown()
 
 
+def _stop_process_group(proc: subprocess.Popen[bytes]) -> None:
+    for sig, wait_s in ((signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, sig)
+        try:
+            proc.wait(timeout=wait_s)
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)  # reap any child that outlived the wrapper
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
 @pytest.fixture(scope="module")
 def moveit_cell(tmp_path_factory: pytest.TempPathFactory) -> Iterator[FakeRosRobot]:
     tmp = tmp_path_factory.mktemp("move_group")
@@ -149,6 +164,9 @@ def moveit_cell(tmp_path_factory: pytest.TempPathFactory) -> Iterator[FakeRosRob
         stdout=log,
         stderr=subprocess.STDOUT,
         env=dict(os.environ),
+        # `ros2 run` is a wrapper: terminating it alone orphans the real move_group, which then keeps
+        # answering /plan_kinematic_path for later test modules. Own a process group and stop all of it.
+        start_new_session=True,
     )
     try:
         time.sleep(1.0)
@@ -161,11 +179,7 @@ def moveit_cell(tmp_path_factory: pytest.TempPathFactory) -> Iterator[FakeRosRob
             pytest.fail(f"move_group not ready: {error}; see {tmp / 'move_group.log'}")
         yield robot
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        _stop_process_group(proc)
         log.close()
         robot.close()
 
