@@ -1568,6 +1568,8 @@ def _register_control(server: MCPServer, guard: ArmGuard) -> None:
         force_n: float, torque_nm: float, ctx: Context
     ) -> PolicyDecision | Elicit[ApprovalForm]:
         pre = _thresholds_precheck(force_n, torque_nm)
+        if pre is None and not guard.rate.would_allow("set_collision_thresholds"):
+            pre = "rate limit reached"
         msg = (
             f"APPROVE COLLISION THRESHOLD CHANGE on '{guard.policy.robot.name}'? force={force_n} N, "
             f"torque={torque_nm} N*m (policy maxima {guard.policy.force.max_contact_force_n} N / "
@@ -1733,6 +1735,8 @@ def _register_safety(server: MCPServer, guard: ArmGuard) -> None:
         pre = guard.state.motion_blocked_reason
         if pre is None and guard.state.active is not None:
             pre = "a plan is executing"
+        if pre is None and not guard.rate.would_allow("error_recovery"):
+            pre = "rate limit reached"
         msg = (
             f"APPROVE ERROR RECOVERY on '{guard.policy.robot.name}'? This clears the robot's reflex/error state so it "
             "can accept commands again. Make sure the cause (e.g. a collision) has been resolved."

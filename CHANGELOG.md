@@ -60,6 +60,8 @@ First public version. Alpha: tested against a simulated FR3 only.
   fake backend's Cartesian plans are now time-parameterised with acceleration limits.
 - Resolver errors and calls rejected by argument validation are audited; tool schemas publish the policy
   bounds; plan TTLs use the monotonic clock; an unwritable `--audit-log` exits with status 2.
+- The `set_collision_thresholds` and `error_recovery` approval resolvers check the rate limit, like the
+  other approval-gated tools, so an over-limit request is refused before a human is prompted.
 
 ### Known limitations
 

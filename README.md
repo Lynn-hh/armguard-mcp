@@ -49,8 +49,8 @@ excellent job of what they aim for: they connect any MCP client to any ROS 1 or 
 `rosbridge`, with no changes to the robot's code. The LLM can publish to topics, call services and
 actions, and set parameters. That generality is the point, and it also means the model can reach anything
 the ROS graph exposes. Their open issue [#283](https://github.com/robotmcp/ros-mcp-server/issues/283)
-("Unrestricted ROS service calls via MCP tool: prompt injection → robot control") describes the resulting
-risk, and permissions are listed there as a feature the project welcomes.
+("Security: Unrestricted ROS service calls via MCP tool — prompt injection → robot control") describes the
+resulting risk, and the project's README lists permissions among the contributions it welcomes.
 
 armguard-mcp makes the opposite trade-off. It is narrow, specific to manipulators, and restrictive by
 design:

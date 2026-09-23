@@ -122,7 +122,7 @@ flowchart LR
 |---|---|
 | Per-tool and global token buckets (`rate_limits`), with a tighter default for `execute_plan` in `fr3.yaml` (10 per minute). Denials are audited. | `safety/ratelimit.py`, `ArmGuard.call` |
 | `stop_motion`, `estop` and `get_safety_status` are **never rate limited** and never need approval, so an agent or a human can always stop the arm, even under a flood. | `NEVER_LIMITED` |
-| The approval resolver checks the rate limit without consuming it, so an over-limit request is denied **before** a human is prompted. This prevents prompt fatigue from floods. | `RateLimiter.would_allow`, `execute_precheck` |
+| Every approval resolver checks the rate limit without consuming it, so an over-limit request is denied **before** a human is prompted. This prevents prompt fatigue from floods. | `RateLimiter.would_allow`, `execute_precheck`, `_approve_switch`, `_approve_thresholds`, `_approve_reset`, `_approve_recovery` |
 | Plans are refused while the e-stop is latched. | `require_motion_allowed` |
 
 ### T6. Prompt injection through perception and tool outputs
@@ -167,7 +167,7 @@ detecting injections; it bounds their effect.
 | R7 | **Other ROS 2 nodes.** armguard controls only its own path. Any node on the same `ROS_DOMAIN_ID` can command the controllers directly. | Isolate the robot's ROS domain and network. Use SROS2 where practical. |
 | R8 | **Audit log integrity.** The log is append-only by convention, not tamper-evident. The in-memory tail is readable by the LLM through `get_audit_tail`, which includes operator names. | Ship logs off the host. A hash chain is on the roadmap. Disable `introspect` if operator names are sensitive. |
 | R9 | **Host compromise or policy tampering.** Anyone who can edit the policy file or the Python environment defeats every control. | Out of scope. Protect the host and review policy changes like code. |
-| R10 | **The robot's model is only as good as the policy.** Wrong joint limits, a wrong base frame or a wrong TCP offset make the envelope check the wrong thing. | Verify the policy against the robot's datasheet and against measured poses. `fr3.yaml` marks the velocity and acceleration values "verify for your robot". |
+| R10 | **The robot's model is only as good as the policy.** Wrong joint limits, a wrong base frame or a wrong TCP offset make the envelope check the wrong thing. | Verify the policy against the robot's datasheet and against measured poses. `fr3.yaml` says to verify its velocity and acceleration values against the documentation for your robot and firmware. |
 
 ## 6. References
 

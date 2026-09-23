@@ -659,3 +659,23 @@ def test_unwritable_audit_log_exits_cleanly(tmp_path: Any) -> None:
     )
     assert out.returncode == 2, out.stderr
     assert "cannot open audit log" in out.stderr and "Traceback" not in out.stderr
+
+
+@pytest.mark.parametrize("mode", ["auto", "legacy"])
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [("set_collision_thresholds", {"force_n": 20.0, "torque_nm": 4.0}), ("error_recovery", {})],
+)
+async def test_over_rate_limit_request_never_prompts_the_human(mode: str, tool: str, args: dict) -> None:
+    # Like execute_plan, switch_controllers and reset_estop: a request the rate limit will refuse is
+    # denied by the resolver, so a flood cannot turn into a flood of approval prompts.
+    policy = make_policy(approval={"mode": "always"}, rate_limits={"per_tool": {tool: 1}})
+    app = build(policy, FakeBackend.from_policy(policy, speedup=100.0), AuditLogger())
+    human = Elicitor("accept", approve=True)
+    async with Client(app.server, mode=mode, elicitation_callback=human) as c:
+        assert not (await c.call_tool(tool, args)).is_error
+        prompts = len(human.messages)
+        assert prompts >= 1
+        r = await c.call_tool(tool, args)
+        assert r.is_error and "rate limit" in text(r)
+        assert len(human.messages) == prompts
