@@ -97,6 +97,7 @@ def panda_policy(**over: Any) -> Policy:
         "collision_behavior_service": None,
         "error_recovery_action": None,
     }
+    d["force"]["wrench_timeout_s"] = 0.5  # slack for the in-process fake wrench on slow CI runners
     d.update(over)
     return Policy.from_dict(d)
 

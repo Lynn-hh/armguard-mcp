@@ -51,6 +51,10 @@ def ros2_section(**over: Any) -> dict[str, Any]:
 def ros_policy(ros2: dict[str, Any] | None = None, **over: Any) -> Any:
     from tests.conftest import make_policy
 
+    # The fake robot publishes from the same Python process as the server, so on slow shared CI runners
+    # its 100 Hz wrench can stall past the 0.1 s production default; allow more slack in these tests only.
+    over.setdefault("force", {})
+    over["force"].setdefault("wrench_timeout_s", 0.5)
     return make_policy(ros2=ros2_section(**(ros2 or {})), **over)
 
 

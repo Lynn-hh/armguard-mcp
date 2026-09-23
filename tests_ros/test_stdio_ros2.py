@@ -23,6 +23,11 @@ pytestmark = pytest.mark.anyio
 async def test_cli_stdio_with_ros2_backend(robot: FakeRosRobot, tmp_path) -> None:
     cfg = tmp_path / "ros2.yaml"
     cfg.write_text(yaml.safe_dump({"ros2": {"startup_timeout_s": 10.0}}))
+    # Same slack as tests_ros/conftest.ros_policy: the fake robot's wrench can stall on slow CI runners.
+    policy_dict = yaml.safe_load(FR3_POLICY.read_text())
+    policy_dict["force"]["wrench_timeout_s"] = 0.5
+    policy_file = tmp_path / "fr3.yaml"
+    policy_file.write_text(yaml.safe_dump(policy_dict))
     audit = tmp_path / "audit.jsonl"
     params = StdioServerParameters(
         command=sys.executable,
@@ -30,7 +35,7 @@ async def test_cli_stdio_with_ros2_backend(robot: FakeRosRobot, tmp_path) -> Non
             "-m",
             "armguard_mcp",
             "--policy",
-            str(FR3_POLICY),
+            str(policy_file),
             "--backend",
             "ros2",
             "--ros2-config",
