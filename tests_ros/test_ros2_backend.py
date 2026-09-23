@@ -309,6 +309,11 @@ async def test_gripper_command_fallback(robot: FakeRosRobot) -> None:
         robot.object_width = 0.03
         st = await b.gripper_grasp(0.02, 15.0, 0.05, 0.005, 0.005)
         assert st.is_grasped and robot.gripper_goals[-1][1].command.max_effort == pytest.approx(15.0)
+        # An object exactly the requested width must still be squeezed (aim epsilon_inner inside it).
+        await b.gripper_move(0.05, 0.05)
+        st = await b.gripper_grasp(0.03, 15.0, 0.05, 0.005, 0.005)
+        assert st.is_grasped
+        assert robot.gripper_goals[-1][1].command.position == pytest.approx((0.03 - 0.005) / 2)
 
 
 @pytest.mark.skipif(not HAVE_FRANKA_MSGS, reason="franka_msgs not built")

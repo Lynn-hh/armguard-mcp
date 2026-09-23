@@ -1344,7 +1344,10 @@ class Ros2Backend(RobotBackend):
                 raise BackendFailed(f"gripper grasp failed: {res.error}")
             self._grasped = bool(res.success)
         else:
-            status, res = await self._gripper_command(width, force, "gripper grasp")
+            # GripperCommand has no grasp semantics: aim epsilon_inner inside the object width so the
+            # fingers squeeze and stall on it (like franka's Grasp), instead of stopping just at contact.
+            target = max(0.0, width - epsilon_inner)
+            status, res = await self._gripper_command(target, force, "gripper grasp")
             if status not in (_STATUS_SUCCEEDED, _STATUS_ABORTED):
                 raise BackendFailed(f"gripper grasp failed ({_STATUS_NAMES.get(status, status)})")
             self._grasped = bool(res.stalled) or (status == _STATUS_ABORTED and res.position > 0.0)
