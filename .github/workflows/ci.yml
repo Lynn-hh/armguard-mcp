@@ -86,4 +86,5 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source /opt/venv/bin/activate
           python -c "import rclpy, armguard_mcp; print('rclpy ok, armguard-mcp', armguard_mcp.__version__)"
-          pytest -q -rs tests_ros   # franka_msgs tests skip: franka_msgs is not on apt
+          # python -m pytest: the bare `pytest` on PATH is the system one, which cannot see the venv.
+          python -m pytest -q -rs -p no:launch_testing -p no:launch_ros tests_ros   # franka_msgs tests skip: not on apt
