@@ -191,7 +191,7 @@ async def test_stale_plan_rejected() -> None:
 
 async def test_plan_ttl_expiry_with_injected_clock() -> None:
     clk = FakeClock()
-    app = make_app(make_policy(approval={"mode": "never"}), clock=clk)
+    app = make_app(make_policy(approval={"mode": "never"}), monotonic=clk)  # TTLs use the monotonic clock
     async with Client(app.server) as c:
         s = await plan_joints(c, target(0.3))
         clk.advance(119.0)
@@ -200,6 +200,24 @@ async def test_plan_ttl_expiry_with_injected_clock() -> None:
         r = await c.call_tool("execute_plan", {"plan_id": s["plan_id"]})
         assert r.is_error and "expired" in text(r)
         r = await c.call_tool("execute_plan", {"plan_id": s2["plan_id"]})
+        assert not r.is_error, text(r)
+
+
+async def test_plan_ttl_ignores_wall_clock_steps() -> None:
+    """Regression: a backward wall-clock step (NTP, manual date change) must not keep a plan alive,
+    and a forward step must not expire it early. TTLs run on the monotonic clock."""
+    wall, mono = FakeClock(), FakeClock(0.0)
+    app = make_app(make_policy(approval={"mode": "never"}), clock=wall, monotonic=mono)
+    async with Client(app.server) as c:
+        s = await plan_joints(c, target(0.3))
+        wall.advance(-3600.0)  # wall clock stepped back an hour ...
+        wall.advance(3000.0)
+        mono.advance(3000.0)  # ... while 50 minutes really passed (ttl 120 s)
+        r = await c.call_tool("execute_plan", {"plan_id": s["plan_id"]})
+        assert r.is_error and "expired" in text(r)
+        s = await plan_joints(c, target(0.2))
+        wall.advance(7200.0)  # a forward wall-clock step does not expire a fresh plan
+        r = await c.call_tool("execute_plan", {"plan_id": s["plan_id"]})
         assert not r.is_error, text(r)
 
 

@@ -1,12 +1,20 @@
 """Server-side safety envelope: pure, side-effect-free checks.
 
-Hard violations (joint limits, workspace box, keep-out zones, step caps, speed caps) make a
+Hard violations (joint limits, workspace box, keep-out zones, step caps, speed and acceleration
+caps) make a
 plan permanently non-executable - not even a human approval can override them. Soft
 conditions (close to a joint limit, unusually large motion) mark the plan as "outside the
 envelope", which requires human approval when ``approval.mode == outside_envelope``.
 
 The envelope checks the TCP point trajectory and joint-space quantities. It does NOT check
 full link geometry for collisions; that is the planner's (MoveIt's) job.
+
+The TCP path is checked as a polyline: the caller samples the joint path (``densify``), refines
+it until consecutive TCP samples are at most ``motion.tcp_check_resolution_m`` apart, and every
+*segment* between samples is tested against the keep-out boxes, so a zone thinner than the sample
+spacing cannot be tunnelled through. The workspace box is convex, so testing the vertices is
+enough for the polyline. The real TCP arc deviates from its chord by about step^2 / (8 R) (under
+0.2 mm for a 1 cm step and a 5 cm radius of curvature).
 """
 
 from __future__ import annotations
@@ -124,6 +132,60 @@ def max_joint_velocity_ratio(plan: Plan, policy: Policy) -> float:
     return ratio
 
 
+def max_joint_acceleration_ratio(plan: Plan, policy: Policy) -> float:
+    """Peak joint acceleration as a fraction of ``max_acceleration``, from the waypoint timing alone.
+
+    Velocities are averaged over each segment and placed at the segment midpoints; the plan starts
+    and ends at rest. The finite difference of those averages is a weighted average of the true
+    acceleration, so it never overestimates the peak of a trajectory the waypoints sample, and a
+    velocity step (a segment that starts at full speed from rest) shows up as a large ratio.
+    Independent of the ``acceleration_scaling`` the backend claims to have used.
+    """
+    wp, ts = plan.waypoints, plan.time_from_start
+    if len(wp) < 2:
+        return 0.0
+    limits = policy.robot.limits_list()
+    n = len(limits)
+    vel: list[list[float]] = [[0.0] * n]
+    mids: list[float] = [ts[0]]
+    for i in range(1, len(wp)):
+        dt = ts[i] - ts[i - 1]
+        if dt <= 0:
+            return math.inf
+        vel.append([(wp[i][j] - wp[i - 1][j]) / dt for j in range(n)])
+        mids.append((ts[i] + ts[i - 1]) / 2)
+    vel.append([0.0] * n)
+    mids.append(ts[-1])
+    ratio = 0.0
+    for k in range(1, len(vel)):
+        dt = mids[k] - mids[k - 1]
+        if dt <= 0:
+            return math.inf
+        for j, lim in enumerate(limits):
+            ratio = max(ratio, abs(vel[k][j] - vel[k - 1][j]) / dt / lim.max_acceleration)
+    return ratio
+
+
+def segment_intersects_box(
+    p: Sequence[float], q: Sequence[float], lo: Sequence[float], hi: Sequence[float]
+) -> bool:
+    """True if the closed segment p->q touches the axis-aligned box [lo, hi] (slab test)."""
+    t0, t1 = 0.0, 1.0
+    for a in range(3):
+        d = q[a] - p[a]
+        if abs(d) < 1e-15:
+            if p[a] < lo[a] or p[a] > hi[a]:
+                return False
+            continue
+        ta, tb = (lo[a] - p[a]) / d, (hi[a] - p[a]) / d
+        if ta > tb:
+            ta, tb = tb, ta
+        t0, t1 = max(t0, ta), min(t1, tb)
+        if t0 > t1:
+            return False
+    return True
+
+
 def joint_travel(plan: Plan) -> list[float]:
     """Path length travelled by each joint over the whole plan [rad]."""
     n = len(plan.waypoints[0]) if plan.waypoints else 0
@@ -182,7 +244,7 @@ def check_plan(
                 v.append(viol)
     v.extend(x for x in check_joint_positions(plan.final, policy, where="goal") if x.severity == "soft")
 
-    # TCP inside workspace box, outside keep-out zones, for every sample.
+    # TCP inside workspace box, outside keep-out zones, for every sample ...
     seen_zone: set[str] = set()
     for i, p in enumerate(tcp_positions):
         for viol in check_tcp_position(p, policy, where=f"sample {i}"):
@@ -190,6 +252,25 @@ def check_plan(
             if key not in seen_zone:
                 seen_zone.add(key)
                 v.append(viol)
+    # ... and no segment between consecutive samples may cross a keep-out zone.
+    for zone in policy.workspace.keep_out:
+        key = "KEEP_OUT" + zone.name
+        if key in seen_zone:
+            continue
+        for i in range(1, len(tcp_positions)):
+            a, b = tcp_positions[i - 1], tcp_positions[i]
+            if segment_intersects_box(a, b, zone.min, zone.max):
+                seen_zone.add(key)
+                v.append(
+                    _v(
+                        "KEEP_OUT",
+                        "hard",
+                        f"TCP path between samples {i - 1} and {i} crosses keep-out zone '{zone.name}'",
+                        zone=zone.name,
+                        segment=[list(a), list(b)],
+                    )
+                )
+                break
 
     # Joint travel caps.
     travel = joint_travel(plan)
@@ -238,6 +319,19 @@ def check_plan(
                 "hard",
                 f"peak joint velocity is {ratio:.3f} of the limit; the policy cap is {motion.max_velocity_scaling}",
                 ratio=ratio,
+            )
+        )
+    # Acceleration cap, measured from the timing (not the backend's claimed scaling). 10 % slack
+    # absorbs the resampling of planner output; a velocity step is far above it.
+    acc = max_joint_acceleration_ratio(plan, policy)
+    if acc > motion.max_acceleration_scaling * 1.1 + 1e-6:
+        v.append(
+            _v(
+                "ACCELERATION",
+                "hard",
+                f"peak joint acceleration is {acc:.3f} of the limit; the policy cap is "
+                f"{motion.max_acceleration_scaling}",
+                ratio=acc,
             )
         )
     if plan.velocity_scaling > motion.max_velocity_scaling + _EPS:

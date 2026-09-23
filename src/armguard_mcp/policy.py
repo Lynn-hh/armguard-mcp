@@ -149,6 +149,13 @@ class MotionSection(_Strict):
     check_resolution_rad: float = Field(
         default=0.02, gt=0, description="Joint-space sampling for envelope checks"
     )
+    tcp_check_resolution_m: float = Field(
+        default=0.01,
+        gt=0,
+        le=0.05,
+        description="Envelope samples are refined until consecutive TCP positions are at most this far apart; "
+        "keep-out zones are then tested against every segment between samples",
+    )
     cartesian_eef_step_m: float = Field(default=0.005, gt=0)
 
     @model_validator(mode="after")
@@ -166,6 +173,18 @@ class ForceSection(_Strict):
     max_contact_force_n: float = Field(gt=0)
     max_contact_torque_nm: float = Field(gt=0)
     monitor_rate_hz: float = Field(default=200.0, gt=0, le=5000)
+    require_wrench: bool = Field(
+        default=True,
+        description="Refuse to execute when the backend provides no external wrench estimate (fail closed). "
+        "false = allow motion with NO server-side force limit (the approval prompt says so)",
+    )
+    wrench_timeout_s: float = Field(
+        default=0.1,
+        gt=0,
+        le=2.0,
+        description="While executing, a wrench read that takes longer than this, or a wrench stamp that stops "
+        "advancing for longer than this, is a monitor failure: the motion is stopped",
+    )
 
 
 class GripperSection(_Strict):

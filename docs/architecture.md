@@ -70,7 +70,11 @@ client ──tools/call──▶ SDK ──▶ [approval resolver(s)]  ──▶
    - `Elicit(message, ApprovalForm)`, which makes the SDK send an elicitation request to the client.
 
    Decline and cancel reach the tool body as `DeclinedElicitation` / `CancelledElicitation`, so they can
-   be audited.
+   be audited. Resolvers are also **infallible**: a backend error while pre-checking (for example a
+   joint-state timeout) becomes a `precheck_failed` denial rather than an exception, because an exception
+   in a resolver would skip the body and its audit record. `reset_estop`'s resolver returns an
+   `ApprovalForm` subclass that carries the e-stop event number as a class attribute; the body compares
+   it with the current event, so an approval cannot release a newer e-stop.
 3. **`ArmGuard.call(tool, args)`** is an async context manager around every body. It consumes a
    rate-limit token (unless the tool is exempt), starts the backend lazily on first use, and writes
    exactly one `tool_call` audit record. It maps exceptions to results:
@@ -79,18 +83,30 @@ client ──tools/call──▶ SDK ──▶ [approval resolver(s)]  ──▶
    - `BackendError` → a `ToolError` that says "robot backend error: …";
    - `PlanError` → `Denied`;
    - cancellation → outcome `cancelled`, then re-raised.
+
+   `_AuditedServer.call_tool` (an `MCPServer` subclass) records calls that fail before the body runs,
+   such as argument-validation errors, with outcome `rejected`.
 4. **Body.** The body repeats every check that matters (see the next section), calls `check_approval`,
    and then acts.
-5. **Execution** (`run_execution`) runs `backend.execute(plan, on_progress, should_abort)` and a force
-   monitor task in one anyio task group:
+5. **Execution.** `execute_plan` claims the execution slot (`SafetyState.claim_execution`) before its
+   first `await`, re-checks, reads the baseline wrench (refusing if there is none and
+   `force.require_wrench` is true), consumes the plan id, and calls `run_execution`, which runs
+   `backend.execute(plan, on_progress, should_abort)` and a force monitor task in one anyio task group:
+   - just before `backend.execute`, synchronously, it checks that no e-stop or stop request arrived
+     during the checks; if one did, nothing is sent;
    - `on_progress` forwards to `ctx.report_progress` (best effort);
    - `should_abort` is polled by the backend every control tick, and becomes true when `stop_motion`,
-     `estop` or the monitor call `request_abort`;
-   - a force violation calls `backend.stop()`, latches the e-stop, invalidates all plans, writes a
+     `estop` or the monitor call `request_abort`, or whenever the e-stop is latched;
+   - the monitor fails closed: a read error, a missing wrench, a read slower than `wrench_timeout_s`, or
+     a stamp that stops advancing aborts the motion;
+   - a force violation stops the robot, latches the e-stop, invalidates all plans, writes a
      `force_violation` audit event, and returns an error to the model.
 
-   A `BackendError` inside the task group is captured and re-raised outside it, so the model sees the
-   real message instead of a hidden `ExceptionGroup`.
+   Every stop goes through `ArmGuard.safe_stop`: `backend.stop()` shielded from cancellation, with a
+   timeout, latching the e-stop if it fails. If the call is cancelled mid-motion (client cancel, host
+   timeout, disconnect), `run_execution` calls it before re-raising and audits `execution_interrupted`.
+   A `BackendError` inside the task group is captured and re-raised outside it, and anything unexpected
+   is turned into a clear `ToolError`, so the model never sees a bare "Error executing tool".
 
 ## Why resolvers are side-effect free
 
@@ -134,20 +150,23 @@ The model never sends a trajectory. A `plan_*` tool:
 1. clamps velocity and acceleration scaling to the policy caps;
 2. converts poses to the base frame, using the backend's tf when the model gives a `frame_id`;
 3. asks the backend for a `Plan`: joint waypoints with timestamps, scaling, and the start state;
-4. **validates** it: `densify` at `check_resolution_rad`, FK for every sample, then `check_plan` produces
-   hard and soft `Violation`s;
+4. **validates** it: `densify` at `check_resolution_rad`, FK for every sample, bisection until the TCP
+   moves at most `tcp_check_resolution_m` between samples, then `check_plan` produces hard and soft
+   `Violation`s (keep-out zones are tested against every segment between samples; velocities and
+   accelerations are computed from the waypoint timing);
 5. stores it in `PlanStore` as a `StoredPlan(plan, summary, verdict, expires_at)`, including when it is
    rejected. That lets `execute_plan` later explain exactly why it refuses;
 6. returns a `PlanSummary`: `plan_id`, `status` (`executable` / `needs_approval` / `rejected`), duration,
-   waypoint count, start and final joints, final TCP pose, peak velocity ratio, largest travel, TCP path
-   length, violations, `requires_approval`, `expires_at`, `dry_run`, notes.
+   waypoint count, start and final joints, final TCP pose, peak velocity and acceleration ratios, largest
+   travel, TCP path length, violations, `requires_approval`, `expires_at`, `dry_run`, `force_monitoring`,
+   notes.
 
 Properties of a handle:
 
 | Property | Implementation |
 |---|---|
 | Unguessable enough for this purpose | `uuid4().hex[:12]` (48 random bits) |
-| Short-lived | `expires_at = now + plan_ttl_s` (default 120 s) |
+| Short-lived | expires `plan_ttl_s` (default 120 s) after planning, on the monotonic clock; `expires_at` shows the wall-clock equivalent |
 | Single-use | `PlanStore.consume` moves the id to a "gone" map with the reason; a second use fails with "already used" |
 | Bound to the start state | `execute_plan` refuses if `max_deviation(current joints, plan.start) > start_tolerance_rad` |
 | Revocable | `invalidate_all` on e-stop and on force violation |
@@ -159,8 +178,11 @@ Properties of a handle:
   on a worker thread. Several tool calls can be in flight at once on one session, because the SDK dispatches
   requests concurrently. This has been verified with the in-memory transport. That is what lets `stop_motion` or `estop` interrupt a running
   `execute_plan`, and `test_stop_motion_aborts_in_progress_execution` depends on it.
-- **One motion at a time.** `SafetyState.active` holds the executing plan. `execute_plan`, controller
-  switches, threshold changes and error recovery are refused while it is set.
+- **One motion at a time.** `SafetyState.active` holds the executing plan. It is claimed atomically at
+  the top of `execute_plan`, before the first `await`, and released only by the call that claimed it.
+  A second `execute_plan`, controller switches, threshold changes and error recovery are refused while it
+  is set. Gripper actions have their own slot (`SafetyState.gripper`) with a cancel scope, which
+  `stop_motion` and `estop` cancel after `backend.stop()`.
 - **Cooperative abort.** Stopping is two-pronged: `ActiveExecution.request_abort()` sets a flag that the
   backend polls every tick through `should_abort()`, and `backend.stop()` is called directly as well. The
   first abort reason wins.

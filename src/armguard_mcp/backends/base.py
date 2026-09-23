@@ -87,7 +87,12 @@ class RobotBackend(abc.ABC):
 
     @abc.abstractmethod
     async def get_wrench(self) -> Wrench | None:
-        """Estimated external wrench at the TCP, or None if the robot has no estimate."""
+        """Estimated external wrench at the TCP, or None if the robot has no estimate.
+
+        Polled by the server's force monitor while a plan executes. Return promptly (the server
+        treats a read slower than ``force.wrench_timeout_s`` as a monitor failure) and set
+        ``stamp`` to the time of the measurement, so a wrench that stops updating can be detected.
+        """
 
     # --- controllers -------------------------------------------------------------------
     @abc.abstractmethod
@@ -115,11 +120,20 @@ class RobotBackend(abc.ABC):
     @abc.abstractmethod
     async def execute(
         self, plan: Plan, on_progress: ProgressCallback, should_abort: AbortCheck
-    ) -> ExecutionResult: ...
+    ) -> ExecutionResult:
+        """Run ``plan`` and return when the motion has ended.
+
+        Poll ``should_abort`` while moving and stop promptly when it returns True. If this coroutine
+        is cancelled, the motion must be stopped (e.g. cancel the trajectory goal in a shielded
+        scope) before the cancellation propagates. The server additionally calls :meth:`stop` on
+        cancellation, but must not be the only line of defence.
+        """
 
     @abc.abstractmethod
     async def stop(self) -> None:
-        """Stop any motion as quickly as the controller allows. Must never raise for 'nothing to stop'."""
+        """Stop ALL motion - the arm trajectory and any gripper action - as quickly as the controllers
+        allow. Must never raise for 'nothing to stop'. Used by ``stop_motion``, ``estop``, the force
+        monitor and on cancellation."""
 
     # --- gripper -----------------------------------------------------------------------
     @abc.abstractmethod

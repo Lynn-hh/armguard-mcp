@@ -244,12 +244,14 @@ def _summary(plan: Plan) -> PlanSummary:
         final_joint_positions=plan.final,
         final_ee_pose=Pose(frame_id="b", position=Vector3(x=0, y=0, z=0), orientation=Quaternion()),
         max_joint_velocity_ratio=0.1,
+        max_joint_acceleration_ratio=0.1,
         max_joint_travel_rad=0.1,
         tcp_path_length_m=0.1,
         velocity_scaling=0.1,
         acceleration_scaling=0.1,
         requires_approval=False,
         dry_run=False,
+        force_monitoring="available",
     )
 
 

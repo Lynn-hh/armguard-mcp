@@ -49,6 +49,7 @@ from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 from armguard_mcp import geometry as g
+from armguard_mcp.backends.fake import FR3_MAX_ACCELERATION, FakeBackend
 from armguard_mcp.imaging import gradient_png
 from armguard_mcp.kinematics import FR3_JOINT_NAMES, FR3_READY, FR3Kinematics
 
@@ -74,13 +75,19 @@ def _s(d: Any) -> float:
 
 
 def smooth_trajectory(
-    start: Sequence[float], goal: Sequence[float], vel_scale: float, n: int = 25
+    start: Sequence[float], goal: Sequence[float], vel_scale: float, acc_scale: float = 1.0, n: int = 25
 ) -> tuple[list[list[float]], list[float], list[list[float]]]:
-    """Cubic (smoothstep) joint-space interpolation with velocities; peak speed <= vel_scale * limit."""
+    """Cubic (smoothstep) joint-space interpolation with velocities; peak speed <= vel_scale * limit and
+    peak acceleration <= acc_scale * limit (like MoveIt's time parameterisation)."""
     d = [b - a for a, b in zip(start, goal, strict=True)]
     vs = vel_scale if vel_scale > 0 else 1.0
-    # smoothstep peak ds/du = 1.5 -> duration so that 1.5 * |d_j| / T <= vs * vmax_j
-    duration = max([1.5 * abs(dj) / (vs * vm) for dj, vm in zip(d, MAX_VEL, strict=True)] + [0.1])
+    as_ = acc_scale if acc_scale > 0 else 1.0
+    # smoothstep: peak ds/du = 1.5 -> 1.5 * |d_j| / T <= vs * vmax_j; peak d2s/du2 = 6 -> 6 |d_j| / T^2 <= as * amax_j
+    duration = max(
+        [1.5 * abs(dj) / (vs * vm) for dj, vm in zip(d, MAX_VEL, strict=True)]
+        + [math.sqrt(6 * abs(dj) / (as_ * am)) for dj, am in zip(d, FR3_MAX_ACCELERATION, strict=True)]
+        + [0.1]
+    )
     pts, times, vels = [], [], []
     for i in range(n):
         u = i / (n - 1)
@@ -108,6 +115,7 @@ class FakeRosRobot:
     ) -> None:
         # prefix="panda" gives a Panda (same kinematics as the FR3) for tests against real MoveIt
         self.prefix = prefix
+        self._timing = FakeBackend()  # only its trajectory timing helper is used
         self.joint_names = [n.replace("fr3", prefix, 1) for n in FR3_JOINT_NAMES]
         self.kin = FR3Kinematics(prefix=prefix)
         self.base_frame = f"{prefix}_link0"
@@ -374,7 +382,9 @@ class FakeRosRobot:
                 out.error_code.val = MoveItErrorCodes.NO_IK_SOLUTION
                 return res
             goal = ik.positions
-        pts, times, vels = smooth_trajectory(start, goal, mpr.max_velocity_scaling_factor)
+        pts, times, vels = smooth_trajectory(
+            start, goal, mpr.max_velocity_scaling_factor, mpr.max_acceleration_scaling_factor
+        )
         self._fill_trajectory(out.trajectory.joint_trajectory, pts, times, vels)
         out.error_code.val = MoveItErrorCodes.SUCCESS
         return res
@@ -404,11 +414,10 @@ class FakeRosRobot:
                 path.append(ik.positions)
                 done += 1
             cur = tgt
-        vs = req.max_velocity_scaling_factor or 1.0
-        times = [0.0]
-        for a, b in itertools.pairwise(path):
-            dt = max(abs(y - x) / (vm * vs) for x, y, vm in zip(a, b, MAX_VEL, strict=True))
-            times.append(times[-1] + max(dt, 0.01))
+        vs = getattr(req, "max_velocity_scaling_factor", 0.0) or 1.0
+        as_ = getattr(req, "max_acceleration_scaling_factor", 0.0) or 1.0
+        # rest-to-rest trapezoidal timing along the path, as MoveIt's time parameterisation does
+        path, times = self._timing._time_parameterize_path(path, vs, as_)
         self._fill_trajectory(res.solution.joint_trajectory, path, times, None)
         res.fraction = done / total if total else 1.0
         res.error_code.val = MoveItErrorCodes.SUCCESS

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 from collections.abc import Sequence
 
@@ -77,7 +78,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"armguard-mcp: {e}", file=sys.stderr)
         return 2
 
-    audit = AuditLogger(args.audit_log)
+    try:
+        audit = AuditLogger(args.audit_log)
+    except OSError as e:
+        print(f"armguard-mcp: cannot open audit log {args.audit_log}: {e}", file=sys.stderr)
+        return 2
     app = build(policy, backend, audit)
     logger.info(
         "armguard-mcp %s: robot=%s backend=%s transport=%s dry_run=%s groups=%s",
@@ -88,6 +93,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         policy.dry_run,
         ",".join(policy.tools.enabled),
     )
+    # docker stop, systemd and MCP hosts end servers with SIGTERM, whose default action kills the
+    # process without running `finally`. Turn it into KeyboardInterrupt so the robot is stopped and
+    # the backend shut down exactly as on Ctrl-C.
+    try:
+        previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+    except ValueError:  # not the main thread (embedded use): leave signal handling to the host
+        previous_sigterm = None
     try:
         if args.transport == "stdio":
             app.server.run("stdio")
@@ -102,12 +114,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if previous_sigterm is not None:  # a second SIGTERM must not abort the shutdown
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
-            anyio.run(backend.shutdown)
-        except Exception:  # pragma: no cover - best effort
+            anyio.run(_stop_and_shutdown, backend)
+        except BaseException:  # pragma: no cover - best effort
             logger.exception("backend shutdown failed")
+        audit.log("server_stop")
         audit.close()
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
     return 0
+
+
+def _sigterm_to_keyboard_interrupt(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
+async def _stop_and_shutdown(backend: object) -> None:
+    """Stop any motion (arm and gripper), then shut the backend down. Each step is best effort."""
+    import anyio
+
+    for step in ("stop", "shutdown"):
+        try:
+            with anyio.fail_after(10.0):
+                await getattr(backend, step)()
+        except Exception:
+            logger.exception("backend %s failed during server shutdown", step)
 
 
 if __name__ == "__main__":  # pragma: no cover

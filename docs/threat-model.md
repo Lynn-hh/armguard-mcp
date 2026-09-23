@@ -75,13 +75,13 @@ flowchart LR
 
 | Mitigation | Where |
 |---|---|
-| The model cannot send trajectories. It sends targets; the server plans them and then validates the **whole path**: the trajectory is sampled every `check_resolution_rad` and the forward kinematics of every sample is checked. | `ArmGuard.validate_plan`, `safety/envelope.py: densify, check_plan` |
-| Hard limits: joint limits along the path, workspace box, keep-out zones, per-plan joint travel cap, Cartesian path-length cap, peak joint velocity against `max_velocity_scaling`, scaling caps, malformed or non-finite input. A plan with any hard violation is stored as non-executable. **No approval can override it.** | `check_plan`, `PlanStore.put`, `execute_plan` (the `stored.executable` check) |
+| The model cannot send trajectories. It sends targets; the server plans them and then validates the **whole path**: the trajectory is sampled every `check_resolution_rad`, refined until the TCP moves at most `tcp_check_resolution_m` between samples, the forward kinematics of every sample is checked, and every segment between samples is tested against the keep-out boxes (a thin zone cannot be tunnelled through). | `ArmGuard.validate_plan`, `ArmGuard._refine_tcp`, `safety/envelope.py: densify, check_plan, segment_intersects_box` |
+| Hard limits: joint limits along the path, workspace box, keep-out zones, per-plan joint travel cap, Cartesian path-length cap, peak joint velocity against `max_velocity_scaling`, peak joint acceleration (from the waypoint timing, not the backend's claimed scaling) against `max_acceleration_scaling`, scaling caps, malformed or non-finite input. A plan with any hard violation is stored as non-executable. **No approval can override it.** | `check_plan`, `PlanStore.put`, `execute_plan` (the `stored.executable` check) |
 | The tool body **independently re-validates** the stored plan right before execution. | `execute_plan`: `verdict, _, _ = await guard.validate_plan(stored.plan)` |
 | Out-of-range gripper width, speed and force, and out-of-range collision thresholds, are **rejected, not clamped**, so an injected "force_n=500" fails loudly. Velocity and acceleration scaling above the cap are clamped, with a note in the plan summary. | `_register_gripper`, `_thresholds_precheck`, `clamp_scaling` |
 | Soft conditions (near a joint limit, a large motion) require a human in `outside_envelope` mode. | `approval_required`, `finalize_plan` |
-| Force/torque monitor during execution. Going over the limit stops the motion, latches the e-stop and invalidates all plans. A monitor that cannot read the wrench aborts the motion. | `ArmGuard.run_execution` (`monitor`, `latch_force_violation`) |
-| `dry_run` (policy or `--dry-run`): everything is validated, nothing moves. | `SafetyState.dry_run`, `execute_plan` |
+| Force/torque monitor during execution. Going over the limit stops the motion, latches the e-stop and invalidates all plans. The monitor fails closed: a wrench that cannot be read, is missing, is slower than `wrench_timeout_s` or stops updating aborts the motion; a stop command that fails latches the e-stop. Without any wrench estimate, `execute_plan` refuses to move unless the policy opts out (`force.require_wrench: false`), and the opt-out is shown in the plan summary and the approval prompt. | `ArmGuard.run_execution` (`monitor`, `safe_stop`, `latch_force_violation`), `ArmGuard.read_start_wrench` |
+| `dry_run` (policy or `--dry-run`): everything is validated, nothing moves, including the gripper. | `SafetyState.dry_run`, `execute_plan`, gripper and control tools |
 
 ### T2. The LLM reaches beyond manipulation: arbitrary topics, services, parameters, shell
 
@@ -111,7 +111,10 @@ flowchart LR
 | Plans are bound to the robot's joint state at planning time. If the robot has moved more than `start_tolerance_rad` since, the plan is **stale** and refused. | `_approve_execute`, `execute_plan` (`max_deviation`) |
 | The id is spent once the body examines it, including on denial, rejection or staleness. A denied plan cannot be resubmitted: the model has to plan again, and the new plan goes through the same checks and prompt. | `execute_plan` (`plans.consume`) |
 | An e-stop or a force violation invalidates **every** outstanding plan. | `PlanStore.invalidate_all` |
-| Only one execution runs at a time. Controller switches, threshold changes and error recovery are refused while a plan is executing. | `SafetyState.active`, the prechecks |
+| Only one execution runs at a time. The slot is claimed synchronously at the top of `execute_plan` (before any `await`), so two concurrent calls cannot both pass the check, and it is released only by its owner. Controller switches, threshold changes and error recovery are refused while a plan is executing or being validated. | `SafetyState.claim_execution` / `release_execution`, the prechecks |
+| A `stop_motion` or `estop` that arrives while `execute_plan` is still validating is never lost: it marks the claimed execution, which is re-checked right before the trajectory is sent, and `should_abort` also reports a latched e-stop. Gripper actions are tracked the same way and are interrupted by both tools. | `run_execution`, `SafetyState.estop`, `_actuate` |
+| A cancelled `execute_plan` (client cancel, host timeout, disconnect) commands a stop, shielded from the cancellation, before it propagates; a failed stop latches the e-stop. SIGTERM stops and shuts down the backend like Ctrl-C. | `run_execution`, `ArmGuard.safe_stop`, `cli.py` |
+| An approval to reset the e-stop is bound to the e-stop event it showed. A newer e-stop latched while the prompt was open is not released. | `reset_approval_form`, `reset_estop` |
 
 ### T5. Denial of service and runaway agents
 
@@ -132,7 +135,8 @@ detecting injections; it bounds their effect.
 | Mitigation | Where |
 |---|---|
 | Every action an injection might trigger goes through T1–T5: the envelope, allowlists, approval, rate limits. | as above |
-| The approval prompt is built **by the server** from the stored plan (duration, peak speed, travel, final TCP, warnings, dry-run flag). None of its text comes from the model, so an injection cannot word the prompt to trick the human. | `ArmGuard.execute_message` |
+| The approval prompt is built **by the server** from the stored plan (duration, peak speed, travel, final TCP, force monitoring, warnings, dry-run flag). None of its text comes from the model, so an injection cannot word the prompt to trick the human. | `ArmGuard.execute_message` |
+| The one prompt that does contain model text, the `reset_estop` prompt (the `estop` reason), puts the server's facts first and shows the agent's reason on one line, in quotes, truncated to 120 characters and labelled *unverified*. | `_reset_message`, `untrusted` |
 | Camera topics must be allowlisted, and images are downscaled to `max_image_width`, which limits the bandwidth for hiding text. | `camera_snapshot` |
 | Image payloads are redacted from the audit log, and long strings are truncated at 2048 characters. | `safety/audit.py: redact` |
 
@@ -148,7 +152,7 @@ detecting injections; it bounds their effect.
 
 | Mitigation | Where |
 |---|---|
-| Every tool call is recorded as a JSONL line: tool, arguments, outcome (`ok`, `denied`, `error`, `dry_run`, `aborted`, `noop`, `cancelled`), plan id, verdict, approval (decision, via, operator), error. So are e-stops, resets, force violations and server start. Each line is fsynced. | `ArmGuard.call`, `AuditLogger.log` |
+| Every tool call is recorded as a JSONL line: tool, arguments, outcome (`ok`, `denied`, `error`, `dry_run`, `aborted`, `noop`, `cancelled`, `stop_failed`), plan id, verdict, approval (decision, via, operator), error. Calls rejected before the tool body runs (argument validation, resolver errors) are recorded with outcome `rejected`. So are e-stops (with their event number and source), resets, force violations, interrupted executions, server start and stop. Each line is fsynced. | `ArmGuard.call`, `_AuditedServer.call_tool`, `AuditLogger.log` |
 
 ## 5. Residual risks (not mitigated, or only partly)
 
@@ -158,8 +162,8 @@ detecting injections; it bounds their effect.
 | R2 | **A client that fakes approvals.** The server sees only what the client reports. A malicious or buggy client can answer `accept`/`approve: true` itself, or claim elicitation support and auto-accept. MCP offers no way to prove a human was involved. | Use a client you trust, on a machine you control. For real hardware, prefer a client that shows elicitation prompts verbatim. The audit log records `via: human` and the operator name as the client reported them; treat them as claims. |
 | R3 | **HTTP without authentication.** Anyone who can reach the port can drive the robot within the policy, including answering its own approval prompts (R2). | Use **stdio**. If you need HTTP, bind to `127.0.0.1` and reach it through an SSH tunnel, or put an authenticating reverse proxy in front. MCP authorization support is on the roadmap. |
 | R4 | `on_client_without_elicitation: allow` also covers `reset_estop`, so a client without elicitation can then release the e-stop, **including a latched force violation, without any human.** | Keep the default `deny` on real hardware. |
-| R5 | **TCP-point workspace checks.** Links other than the TCP (the elbow, for example) are not checked against the box or keep-out zones. | Rely on MoveIt collision objects for scene geometry, keep keep-out zones generous, and keep the robot's own workspace limits configured. |
-| R6 | **Wrench estimates and polling.** The force monitor polls an *estimated* external wrench at `monitor_rate_hz` (200 Hz by default), from Python. It is not real-time. If the backend returns no wrench, monitoring is disabled for that motion (logged, and audited as `force_monitoring: unavailable`). | Configure the robot's collision thresholds and reflexes. `set_collision_thresholds` exists for that, and is capped by the policy. |
+| R5 | **TCP-path workspace checks.** Links other than the TCP (the elbow, for example) are not checked against the box or keep-out zones. The TCP path is checked as chords at most `tcp_check_resolution_m` long; the true arc can deviate from them by a fraction of a millimetre. | Rely on MoveIt collision objects for scene geometry, keep keep-out zones generous, and keep the robot's own workspace limits configured. |
+| R6 | **Wrench estimates and polling.** The force monitor polls an *estimated* external wrench at `monitor_rate_hz` (200 Hz by default), from Python. It is not real-time: it reacts only as fast as the wrench is published and the controller handles a stop. With `force.require_wrench: false` and no wrench estimate, a motion runs with no server-side force limit (disclosed in the plan summary and prompt, audited as `force_monitoring: unavailable`). | Configure the robot's collision thresholds and reflexes. `set_collision_thresholds` exists for that, and is capped by the policy. |
 | R7 | **Other ROS 2 nodes.** armguard controls only its own path. Any node on the same `ROS_DOMAIN_ID` can command the controllers directly. | Isolate the robot's ROS domain and network. Use SROS2 where practical. |
 | R8 | **Audit log integrity.** The log is append-only by convention, not tamper-evident. The in-memory tail is readable by the LLM through `get_audit_tail`, which includes operator names. | Ship logs off the host. A hash chain is on the roadmap. Disable `introspect` if operator names are sensitive. |
 | R9 | **Host compromise or policy tampering.** Anyone who can edit the policy file or the Python environment defeats every control. | Out of scope. Protect the host and review policy changes like code. |

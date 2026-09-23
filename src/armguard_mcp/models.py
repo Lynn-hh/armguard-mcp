@@ -17,9 +17,11 @@ class _Model(BaseModel):
 
 
 class Vector3(_Model):
-    x: float = Field(description="x [m] (or N / N*m for wrenches)")
-    y: float = Field(description="y [m]")
-    z: float = Field(description="z [m]")
+    """A 3-vector. Its unit is given by the field that holds it ([m] for positions, [N] / [N*m] in wrenches)."""
+
+    x: float = Field(description="x component")
+    y: float = Field(description="y component")
+    z: float = Field(description="z component")
 
     def as_tuple(self) -> tuple[float, float, float]:
         return (self.x, self.y, self.z)
@@ -33,10 +35,12 @@ class Vector3(_Model):
 
 
 class Quaternion(_Model):
-    x: float = 0.0
-    y: float = 0.0
-    z: float = 0.0
-    w: float = 1.0
+    """Unit quaternion (x, y, z, w), ROS convention; the identity is (0, 0, 0, 1)."""
+
+    x: float = Field(default=0.0, description="x (vector part)")
+    y: float = Field(default=0.0, description="y (vector part)")
+    z: float = Field(default=0.0, description="z (vector part)")
+    w: float = Field(default=1.0, description="w (scalar part)")
 
     def as_tuple(self) -> tuple[float, float, float, float]:
         return (self.x, self.y, self.z, self.w)
@@ -148,6 +152,9 @@ class PlanSummary(_Model):
     final_joint_positions: list[float]
     final_ee_pose: Pose
     max_joint_velocity_ratio: float = Field(description="Peak joint speed as a fraction of the joint limit")
+    max_joint_acceleration_ratio: float = Field(
+        description="Peak joint acceleration (estimated from the waypoint timing) as a fraction of the joint limit"
+    )
     max_joint_travel_rad: float
     tcp_path_length_m: float
     velocity_scaling: float
@@ -156,6 +163,11 @@ class PlanSummary(_Model):
     requires_approval: bool
     expires_at: str | None = Field(default=None, description="ISO-8601 UTC expiry of the plan handle")
     dry_run: bool
+    force_monitoring: Literal["available", "unavailable"] = Field(
+        description="Whether the backend currently provides an external wrench estimate. Without one the "
+        "server cannot enforce the contact force limit, and execute_plan refuses to move unless the "
+        "policy sets force.require_wrench: false"
+    )
     notes: list[str] = Field(default_factory=list)
 
 
@@ -187,6 +199,10 @@ class GraphInfo(_Model):
 class SafetyStatus(_Model):
     estopped: bool
     reason: str | None = None
+    reason_source: Literal["agent", "server"] | None = Field(
+        default=None, description="Who gave the reason: the AI agent (via estop) or the server itself"
+    )
+    estop_event: int | None = Field(default=None, description="Number of the latched e-stop event")
     estopped_at: str | None = None
     dry_run: bool
     force_violation_latched: bool

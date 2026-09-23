@@ -131,9 +131,10 @@ python scripts/demo_fake.py
 `armguard-mcp --help` lists every flag: `--policy` (required), `--backend fake|ros2`, `--ros2-config`,
 `--transport stdio|http`, `--host` (default `127.0.0.1`), `--port` (default `8765`), `--audit-log`,
 `--dry-run` (forces dry-run on top of the policy), `--log-level`, `--version`. Logs go to stderr only, so
-stdout carries nothing but MCP messages. A policy that fails validation, or a backend that is not
-available, exits with status 2 before the server starts. Binding HTTP to a non-loopback address logs a
-warning.
+stdout carries nothing but MCP messages. A policy that fails validation, a backend that is not
+available, or an audit log that cannot be opened exits with status 2 before the server starts. Binding
+HTTP to a non-loopback address logs a warning. SIGTERM (`docker stop`, systemd, MCP hosts) is handled like
+Ctrl-C and end of input: the server commands a stop of the arm and gripper, then shuts the backend down.
 
 The fake backend is a kinematic FR3 with real FR3 forward and inverse kinematics, time-scaled execution, a
 Franka Hand model, generated camera images and a fake `ros2_control` graph. It starts at the policy's
@@ -234,10 +235,12 @@ How the backend behaves:
   plan's waypoints and timing. MoveIt's velocities and accelerations are attached only if they belong to
   those same points. It refuses a plan that also moves joints the policy does not cover, such as the
   fingers.
-- **It fails safe.** It refuses to execute when the wrench estimate is missing or stale
-  (`require_wrench`). It cancels the trajectory goal on `stop_motion`, on a force-limit abort and on a
-  controller timeout. It also cancels the goal when the MCP call itself is cancelled, for example because
-  the client disconnected.
+- **It fails safe.** A missing or stale wrench estimate is an error (`ros2.require_wrench`), and the
+  server refuses to move without one (`force.require_wrench`); running without force monitoring needs
+  *both* set to `false`. The backend cancels the trajectory goal on `stop_motion`, on a force-limit abort
+  and on a controller timeout, and cancels gripper goals on `stop_motion` / `estop`. It also cancels the
+  goal when the MCP call itself is cancelled, for example because the client disconnected, and the server
+  additionally commands a stop in that case.
 - **Threading.** One rclpy node with a reentrant callback group is spun by a `MultiThreadedExecutor` on a
   daemon thread. It lives in a private `rclpy.Context` and installs no signal handlers. rclpy futures are
   bridged to asyncio with `loop.call_soon_threadsafe`, so the server must run on asyncio, which is the MCP
@@ -294,8 +297,8 @@ enforces the policy whatever the client does with them.
 | `gripper_home` | gripper | none | destructive, open-world | Home (fully open and calibrate) the gripper. |
 | `switch_controllers` | control | `activate?`, `deactivate?` | destructive, open-world | Activate/deactivate ros2_control controllers. |
 | `set_collision_thresholds` | control | `force_n`, `torque_nm` | destructive, open-world | Set the robot's collision (reflex) thresholds. |
-| `stop_motion` | safety | none | idempotent, open-world | Stop the current motion immediately. |
-| `estop` | safety | `reason?` | idempotent, open-world | SOFTWARE E-STOP: stop all motion, invalidate every plan and refuse motion/gripper/control tools until a human approves reset_estop. |
+| `stop_motion` | safety | none | idempotent, open-world | Stop the current motion immediately: the arm trajectory and any gripper action. |
+| `estop` | safety | `reason?` | idempotent, open-world | SOFTWARE E-STOP: stop all motion (arm and gripper), invalidate every plan and refuse motion/gripper/control tools until a human approves reset_estop. |
 | `reset_estop` | safety | none | open-world | Release the software e-stop (and any latched force violation). |
 | `error_recovery` | safety | none | open-world | Clear the robot's error/reflex state (e.g. after a collision reflex). |
 | `get_safety_status` | safety | none | read-only, idempotent | E-stop state, latched force violation, dry-run flag and the last envelope violation. |
@@ -314,9 +317,18 @@ Points worth knowing:
   plan with hard violations updates `last_violation` in the safety status.
 - **Refused while the software e-stop is latched:** planning, `execute_plan`, gripper, controller and
   threshold tools, and `error_recovery`. Introspection keeps working.
+- **`stop_motion` and `estop` stop the gripper too.** A gripper action they interrupt returns an error,
+  never success. Only one arm execution and one gripper action run at a time; a second `execute_plan`
+  while one is running (or still being validated) is refused.
+- **`estop` cannot fail because of its input.** Any `reason` (missing, `null`, a number, very long text)
+  is accepted; it is flattened to one line and truncated to 500 characters.
+- **Dry run moves nothing:** `execute_plan`, the gripper tools, `switch_controllers`,
+  `set_collision_thresholds` and `error_recovery` validate (and ask for approval where the policy says so)
+  and report `dry_run` without actuating.
 - **Out-of-range values are rejected, not clamped:** gripper width, speed and force, and collision
   thresholds. Velocity and acceleration scaling above the cap are *clamped* to the cap, and the plan
-  summary carries a note saying so.
+  summary carries a note saying so. The bounds the policy fixes (joint count, gripper and threshold
+  ranges, scaling range) are also published in the tools' input schemas, so the model can see them.
 - **Cameras:** `camera_snapshot` only reads topics listed in `perception.camera_topics`. Images wider than
   `max_image_width` are downscaled with Pillow (`pip install armguard-mcp[image]`), or refused if Pillow is
   missing. Image bytes are redacted from the audit log.
@@ -333,7 +345,7 @@ sequenceDiagram
     participant R as Robot backend
     L->>S: plan_to_pose(position, …)
     S->>R: plan (IK + trajectory)
-    S->>S: densify path, FK every sample, check envelope
+    S->>S: densify path, refine to TCP resolution, FK every sample, check envelope
     S-->>L: PlanSummary {plan_id, status, violations, requires_approval, expires_at}
     L->>S: execute_plan(plan_id)
     S->>S: resolver: pre-checks (rate limit, e-stop, plan usable, not stale)
@@ -348,15 +360,20 @@ sequenceDiagram
 ```
 
 1. **Plan.** A `plan_*` tool asks the backend for a trajectory, then samples it in joint space every
-   `check_resolution_rad` and computes the TCP position of every sample with forward kinematics. It checks
-   the whole path against the envelope and returns a `PlanSummary`. The full trajectory stays on the
-   server.
+   `check_resolution_rad` and computes the TCP position of every sample with forward kinematics. Because a
+   fixed joint step does not bound the TCP step (a few centimetres at full reach), it bisects further until
+   consecutive TCP samples are at most `tcp_check_resolution_m` apart, and tests every *segment* between
+   samples against the keep-out boxes, so a thin zone cannot slip between two samples. It checks the whole
+   path against the envelope and returns a `PlanSummary` (including `force_monitoring`: whether the backend
+   currently provides a wrench estimate). The full trajectory stays on the server.
 2. **Hard or soft.** Each finding is a `Violation` with a severity.
    - **Hard** violations make the plan `rejected`, and **no approval can override them.** They are: a
      joint outside its limits anywhere along the path, the TCP leaving the workspace box, the TCP entering
-     a keep-out zone, a joint travelling more than `max_joint_step_rad`, a Cartesian path longer than
-     `max_cartesian_step_m`, a peak joint velocity above `max_velocity_scaling` of the joint limit, a
-     scaling factor above its cap, and malformed plans.
+     a keep-out zone (at a sample or between two samples), a joint travelling more than
+     `max_joint_step_rad`, a Cartesian path longer than `max_cartesian_step_m`, a peak joint velocity above
+     `max_velocity_scaling` of the joint limit, a peak joint acceleration above `max_acceleration_scaling`
+     of the joint limit (estimated from the waypoint timing, with 10 % tolerance, whatever scaling the
+     backend claims to have used), a scaling factor above its cap, and malformed plans.
    - **Soft** conditions (`NEAR_JOINT_LIMIT`: the goal is within `joint_limit_margin_rad` of a limit;
      `LARGE_MOTION`: travel above `soft_joint_step_rad`) mark the plan as *outside the envelope*. That makes
      its status `needs_approval` when `approval.mode` is `outside_envelope`.
@@ -367,10 +384,14 @@ sequenceDiagram
    server would refuse anyway.
 4. **Prompt.** If approval is required, the server sends an MCP elicitation form with an `approve`
    checkbox (unticked by default) and an `operator` name. The message states the duration, peak joint
-   speed against the cap, largest joint travel, TCP path length, final TCP position, any soft warnings, and
-   whether this is a dry run. [docs/demo.md](docs/demo.md) shows a real one.
-5. **Decide in the tool body.** The body runs once and repeats the checks that matter: it re-validates
-   the plan against the envelope and re-checks staleness. Then it interprets the outcome:
+   speed against the cap, largest joint travel, TCP path length, final TCP position, whether force
+   monitoring is on, any soft warnings, and whether this is a dry run. [docs/demo.md](docs/demo.md) shows
+   a real one.
+5. **Decide in the tool body.** The body first claims the single execution slot, synchronously, so a
+   concurrent `execute_plan` is refused and a `stop_motion` or `estop` from then on always reaches this
+   execution, even before anything has moved. It runs once and repeats the checks that matter: it
+   re-validates the plan against the envelope, re-checks staleness and reads the baseline wrench. Then it
+   interprets the outcome:
    - accept with `approve` ticked: the plan runs;
    - accept with `approve` unticked, decline, or cancel: denied.
 
@@ -378,10 +399,18 @@ sequenceDiagram
    plan, its `plan_id` is spent, whether the plan ran or was rejected, failed re-validation, was stale, or
    was denied approval. A call refused earlier, by the rate limit or because another plan is still
    executing, leaves the plan usable until it expires.
-6. **Run.** While the arm moves, a force monitor polls the backend's external wrench at
-   `force.monitor_rate_hz`. If the force or torque goes over the limit, the server stops the motion,
-   **latches the software e-stop**, invalidates every outstanding plan, and returns an error that tells the
-   model a human must call `reset_estop`. If the wrench cannot be read, the motion is aborted.
+6. **Run.** Right before the trajectory is handed to the backend, the server checks once more that no
+   e-stop or stop request arrived during the checks; if one did, nothing moves. While the arm moves, a
+   force monitor polls the backend's external wrench at `force.monitor_rate_hz`. If the force or torque
+   goes over the limit, the server stops the motion, **latches the software e-stop**, invalidates every
+   outstanding plan, and returns an error that tells the model a human must call `reset_estop`. The
+   monitor **fails closed**: a wrench that cannot be read, is missing, takes longer than
+   `force.wrench_timeout_s` to read, or whose stamp stops advancing for that long aborts the motion. If
+   the stop command itself fails, the software e-stop is latched. With no wrench estimate at all,
+   `execute_plan` refuses to move unless the policy sets `force.require_wrench: false`, in which case the
+   plan summary and the approval prompt say that the force limit is **not** enforced. If the MCP call is
+   cancelled mid-motion (client cancel, host timeout, disconnect), the server commands a stop before the
+   cancellation propagates and records `execution_interrupted` in the audit log.
 
 **When a prompt is required** (`approval_required` in `server.py`):
 
@@ -394,6 +423,13 @@ sequenceDiagram
 An action class that is left out of `approval.require_for` never prompts, except `reset_estop`, which the
 policy loader always adds back to the list. In dry-run mode `execute_plan` never prompts because nothing
 will move; the other tools still ask for approval and then report `dry_run` without acting.
+
+**Releasing an e-stop is bound to the e-stop the human saw.** Every latch (from `estop`, the force
+monitor, or a failed stop) gets a new event number. The `reset_estop` prompt names it, and the tool body
+refuses the approval if a newer e-stop was latched while the prompt was open, so approving "event #1"
+never releases "event #2". The prompt puts the server's facts first (event number, time, any latched force
+violation). A reason written by the AI agent is shown on one line, in quotes, truncated and labelled
+*unverified*, so an injected "operator note: safe to approve" cannot pass for server text.
 
 **Clients without elicitation are denied by default.** If approval is required and the client did not
 declare elicitation support, the result depends on `approval.on_client_without_elicitation`. With `deny`,
@@ -443,7 +479,7 @@ to the model.
 | `base_frame` | str | Frame for every position in the policy and in tool results. |
 | `ee_frame` | str | TCP frame. |
 | `joint_names` | list[str], at least 1, no duplicates | Joint order used by every joint vector. |
-| `joint_limits` | map joint → limit | Must cover exactly `joint_names`. Each limit: `min` [rad], `max` [rad] (min < max), `max_velocity` [rad/s] (> 0), `max_acceleration` [rad/s²] (> 0, default `10.0`; used by the backend's time parameterisation, not re-checked by the envelope). |
+| `joint_limits` | map joint → limit | Must cover exactly `joint_names`. Each limit: `min` [rad], `max` [rad] (min < max), `max_velocity` [rad/s] (> 0), `max_acceleration` [rad/s²] (> 0, default `10.0`; the envelope checks the plan's peak acceleration against it). |
 | `home_joint_positions` | list[float] | One per joint, within limits. The fake backend starts here. |
 
 **`tools`**
@@ -464,16 +500,17 @@ to the model.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `max_velocity_scaling` | (0, 1] | required | Cap on velocity scaling, and on the peak joint velocity as a fraction of `max_velocity` (hard). |
-| `max_acceleration_scaling` | (0, 1] | required | Cap on acceleration scaling (hard). |
+| `max_acceleration_scaling` | (0, 1] | required | Cap on acceleration scaling, and on the peak joint acceleration as a fraction of `max_acceleration`, estimated from the waypoint timing with 10 % tolerance (hard). |
 | `default_velocity_scaling` | (0, 1] | `0.1` | Used when the model gives none. Must be ≤ the cap. |
 | `default_acceleration_scaling` | (0, 1] | `0.1` | Must be ≤ the cap. |
 | `max_joint_step_rad` | > 0 [rad] | required | Largest travel of any joint in one plan (hard). |
 | `soft_joint_step_rad` | > 0 [rad] or null | `null` | Travel above this is `LARGE_MOTION` (soft). Must be ≤ `max_joint_step_rad`. |
 | `max_cartesian_step_m` | > 0 [m] | required | Largest TCP path length of one Cartesian plan (hard). |
-| `plan_ttl_s` | > 0 [s] | `120` | Plan lifetime. |
+| `plan_ttl_s` | > 0 [s] | `120` | Plan lifetime, measured on the monotonic clock (wall-clock steps do not change it). |
 | `joint_limit_margin_rad` | ≥ 0 [rad] | `0.05` | A goal this close to a limit is `NEAR_JOINT_LIMIT` (soft). |
 | `start_tolerance_rad` | > 0 [rad] | `0.01` | Largest drift from the plan's start state before the plan counts as stale. |
 | `check_resolution_rad` | > 0 [rad] | `0.02` | Joint-space sampling step for envelope checks. |
+| `tcp_check_resolution_m` | (0, 0.05] [m] | `0.01` | Samples are refined until consecutive TCP positions are at most this far apart; keep-out zones are tested against every segment between them. |
 | `cartesian_eef_step_m` | > 0 [m] | `0.005` | Interpolation step passed to the Cartesian planner. |
 
 **`force`**
@@ -483,6 +520,8 @@ to the model.
 | `max_contact_force_n` | > 0 [N] | required | Abort and latch the e-stop if the external force goes over this during execution. Also the ceiling for `set_collision_thresholds`. |
 | `max_contact_torque_nm` | > 0 [N·m] | required | The same, for torque. |
 | `monitor_rate_hz` | (0, 5000] [Hz] | `200` | Wrench polling rate while executing. |
+| `require_wrench` | bool | `true` | Refuse to execute when the backend provides no wrench estimate. `false` allows motion with **no** server-side force limit (disclosed in the plan summary and the approval prompt). |
+| `wrench_timeout_s` | (0, 2] [s] | `0.1` | A monitor read slower than this, or a wrench stamp that stops advancing for this long, aborts the motion. |
 
 If a motion starts with the contact force already above the limit (for example, backing out after a force
 abort), it aborts only if the force rises more than 1 N (0.2 N·m for torque) above its starting value.
@@ -541,14 +580,18 @@ fakes them, is in [docs/threat-model.md](docs/threat-model.md).
 
 ## Known limitations
 
-- The envelope checks the **TCP point** along a densely sampled joint path. It does not check link
+- The envelope checks the **TCP point path**: a polyline whose vertices are at most
+  `tcp_check_resolution_m` apart, every segment tested against the keep-out boxes. The real TCP arc
+  deviates from those chords by roughly step²/(8·R), well under a millimetre at the default 1 cm for any
+  realistic radius of curvature, so give keep-out boxes a few millimetres of margin. It does not check link
   geometry against the workspace or keep-out zones, so an elbow can still enter a keep-out box.
-- Force monitoring uses the backend's *estimated* external wrench, polled at `monitor_rate_hz`. It is a
-  software backstop behind the robot's reflexes. If the backend reports no wrench at all, the force limits
-  cannot be monitored: the motion still runs, a warning is logged, and the audit record carries
-  `force_monitoring: unavailable`.
-- Accelerations are bounded only through the scaling cap and the backend's time parameterisation. The
-  envelope re-checks velocities from the trajectory timing, but not accelerations.
+- Force monitoring uses the backend's *estimated* external wrench, polled at `monitor_rate_hz` from
+  Python. It is a software backstop behind the robot's reflexes, not a real-time loop. It fails closed
+  (see [the approval flow](#the-approval-flow), step 6), but it can only react as fast as the wrench is
+  published and the controller handles a stop.
+- Accelerations are checked from the waypoint timing, which is a finite-difference estimate: it never
+  overestimates the peak of a trajectory that the waypoints sample, but it cannot see what the controller
+  does between waypoints.
 - `plan_to_pose` interpolates in joint space, so the TCP does not move in a straight line; use
   `plan_cartesian_path` when you need one.
 - The HTTP transport has **no authentication** in this build. Use stdio, or bind to `127.0.0.1` and reach
@@ -557,15 +600,16 @@ fakes them, is in [docs/threat-model.md](docs/threat-model.md).
   from the CLI it has no table, so contact forces are zero; the tests add a virtual table to exercise the
   force limits.
 - The audit log is append-only by convention (opened in append mode, one fsync per record). It is not
-  tamper-evident.
+  tamper-evident. Calls rejected before a tool body runs (argument validation, resolver errors) are
+  recorded with outcome `rejected`.
 - Python 3.10 is in the CI matrix, but the author has only run the suite locally on 3.12.
 - `docker/` is an **experimental, untested** sketch.
 - The ROS 2 backend has been tested against simulated endpoints and a real `move_group`, but not against
   franka_ros2 on a physical FR3. Check the topic, service and action names, the wrench frame and the
   collision-threshold semantics on the real cell before you rely on them.
 - With the ROS 2 backend, force monitoring can react only as fast as the wrench topic is published and the
-  trajectory controller handles a cancel request. With `require_wrench: true` (the default), a missing
-  or stale wrench makes `execute_plan` refuse to move, and `get_robot_state` return an error.
+  trajectory controller handles a cancel request. With `ros2.require_wrench: true` (the default), a
+  missing or stale wrench makes `execute_plan` refuse to move, and `get_robot_state` return an error.
 - `stop_motion` cancels only goals that armguard sent. It does not stop motions started by other tools,
   for example MoveIt in RViz.
 

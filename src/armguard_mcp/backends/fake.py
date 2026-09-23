@@ -12,7 +12,7 @@ from __future__ import annotations
 import itertools
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import anyio
@@ -77,6 +77,7 @@ class FakeBackend(RobotBackend):
         camera_topics: Sequence[str] = ("/camera/color/image_raw", "/wrist_camera/color/image_raw"),
         image_size: tuple[int, int] = (64, 48),
         trajectory_controller: str = "fr3_arm_controller",
+        start_tolerance_rad: float = 0.01,
     ) -> None:
         if len(joint_names) != 7:
             raise ValueError("the fake FR3 backend has exactly 7 joints")
@@ -95,6 +96,7 @@ class FakeBackend(RobotBackend):
         self.camera_topics = list(camera_topics)
         self.image_size = image_size
         self.trajectory_controller = trajectory_controller
+        self.start_tolerance_rad = start_tolerance_rad
         self.gripper_max_width = 0.08
 
         self._q = [float(v) for v in initial_positions]
@@ -103,6 +105,7 @@ class FakeBackend(RobotBackend):
         self._grasped = False
         self._busy = False
         self._stop_requested = False
+        self._gripper_stop_requested = False
         self._in_error = False
         self._collision_force_n = 100.0
         self._collision_torque_nm = 30.0
@@ -147,6 +150,7 @@ class FakeBackend(RobotBackend):
             "max_acceleration": [lim.max_acceleration for lim in lims],
             "initial_positions": r.home_joint_positions,
             "camera_topics": policy.perception.camera_topics or ("/camera/color/image_raw",),
+            "start_tolerance_rad": policy.motion.start_tolerance_rad,
         }
         defaults.update(kwargs)
         return cls(**defaults)  # type: ignore[arg-type]
@@ -251,6 +255,27 @@ class FakeBackend(RobotBackend):
         return await self.list_controllers()
 
     # --- planning ----------------------------------------------------------------------
+    @staticmethod
+    def _trapezoid(length: float, v_max: float, a_max: float) -> tuple[float, Callable[[float], float]]:
+        """Rest-to-rest trapezoidal (or triangular) profile over ``length``: (duration, t_of_s)."""
+        if v_max * v_max / a_max >= length:  # triangle profile
+            t_acc = math.sqrt(length / a_max)
+            v_peak, t_cruise = a_max * t_acc, 0.0
+        else:
+            t_acc = v_max / a_max
+            v_peak, t_cruise = v_max, length / v_max - v_max / a_max
+        duration = 2 * t_acc + t_cruise
+        s_acc = 0.5 * a_max * t_acc * t_acc
+
+        def t_of_s(s: float) -> float:
+            if s <= s_acc:
+                return math.sqrt(2 * max(s, 0.0) / a_max)
+            if s <= length - s_acc:
+                return t_acc + (s - s_acc) / v_peak
+            return duration - math.sqrt(2 * max(length - s, 0.0) / a_max)
+
+        return duration, t_of_s
+
     def _time_parameterize(
         self, start: Sequence[float], goal: Sequence[float], vel_scale: float, acc_scale: float
     ) -> tuple[list[list[float]], list[float]]:
@@ -283,6 +308,61 @@ class FakeBackend(RobotBackend):
         pts = [[a + s_of(t) * dj for a, dj in zip(start, d, strict=True)] for t in times]
         pts[-1] = list(goal)
         return pts, times
+
+    def _time_parameterize_path(
+        self, path: list[list[float]], vel_scale: float, acc_scale: float
+    ) -> tuple[list[list[float]], list[float]]:
+        """Rest-to-rest trapezoidal timing along a joint-space polyline (the Cartesian planner's output).
+
+        The path parameter s is "seconds at full joint speed": segment k has length
+        max_j |dq_j| / v_max_j. Then ds/dt <= vel_scale keeps every joint under vel_scale * v_max, and
+        d2s/dt2 is bounded so every joint stays under acc_scale * a_max along each segment. The path
+        is curved in joint space, so the direction changes between segments add acceleration; if the
+        result is still above acc_scale, the whole profile is slowed down uniformly (stretching time
+        by k divides every acceleration by k^2).
+        """
+        pts = [path[0]]
+        for q in path[1:]:
+            if max(abs(a - b) for a, b in zip(q, pts[-1], strict=True)) > 1e-9:
+                pts.append(q)
+        if len(pts) < 2:
+            return [list(path[0]), list(path[-1])], [0.0, self.sample_dt]
+        seg: list[float] = []
+        a_max = math.inf
+        for a, b in itertools.pairwise(pts):
+            dq = [abs(y - x) for x, y in zip(a, b, strict=True)]
+            ell = max(d / self.max_velocity[j] for j, d in enumerate(dq))
+            seg.append(ell)
+            for j, d in enumerate(dq):
+                if d > 1e-12:
+                    a_max = min(a_max, self.max_acceleration[j] * acc_scale * ell / d)
+        duration, t_of_s = self._trapezoid(sum(seg), vel_scale, a_max)
+        times, s = [0.0], 0.0
+        for ell in seg:
+            s += ell
+            times.append(max(t_of_s(s), times[-1] + 1e-4))
+        times[-1] = max(times[-1], duration)
+        ratio = self._accel_ratio(pts, times)
+        if ratio > acc_scale:
+            k = math.sqrt(ratio / acc_scale) * 1.01
+            times = [t * k for t in times]
+        return [list(q) for q in pts], times
+
+    def _accel_ratio(self, pts: list[list[float]], times: list[float]) -> float:
+        """Peak joint acceleration / limit from segment-average velocities (rest at both ends)."""
+        vel = [[0.0] * 7]
+        mids = [times[0]]
+        for i in range(1, len(pts)):
+            dt = times[i] - times[i - 1]
+            vel.append([(pts[i][j] - pts[i - 1][j]) / dt for j in range(7)])
+            mids.append((times[i] + times[i - 1]) / 2)
+        vel.append([0.0] * 7)
+        mids.append(times[-1])
+        return max(
+            abs(vel[k][j] - vel[k - 1][j]) / (mids[k] - mids[k - 1]) / self.max_acceleration[j]
+            for k in range(1, len(vel))
+            for j in range(7)
+        )
 
     def _make_plan(
         self,
@@ -371,13 +451,7 @@ class FakeBackend(RobotBackend):
             return path
 
         path = await anyio.to_thread.run_sync(solve)
-        times = [0.0]
-        for a, b in itertools.pairwise(path):
-            dt = max(
-                abs(y - x) / (self.max_velocity[j] * vel_scale)
-                for j, (x, y) in enumerate(zip(a, b, strict=True))
-            )
-            times.append(times[-1] + max(dt, 0.01))
+        path, times = self._time_parameterize_path(path, vel_scale, acc_scale)
         return self._make_plan(
             "cartesian", path, times, vel_scale, acc_scale, f"cartesian, {len(waypoints)} waypoint(s)"
         )
@@ -408,8 +482,11 @@ class FakeBackend(RobotBackend):
             )
         if plan.joint_names != self.joint_names:
             raise BackendFailed("plan joint names do not match the robot")
-        if max(abs(a - b) for a, b in zip(plan.start, self._q, strict=True)) > 1e-3:
-            raise BackendFailed("robot is not at the plan's start state")
+        dev = max(abs(a - b) for a, b in zip(plan.start, self._q, strict=True))
+        if dev > self.start_tolerance_rad:
+            raise BackendFailed(f"robot is {dev:.4f} rad away from the plan's start state")
+        # Like a JointTrajectoryController, start from the actual state (within the tolerance).
+        plan = plan.model_copy(update={"waypoints": [list(self._q), *plan.waypoints[1:]]})
 
         self._busy = True
         self._stop_requested = False
@@ -462,7 +539,9 @@ class FakeBackend(RobotBackend):
         )
 
     async def stop(self) -> None:
+        """Stop the arm trajectory and the gripper."""
         self._stop_requested = True
+        self._gripper_stop_requested = True
 
     # --- gripper -----------------------------------------------------------------------
     def _gripper_state(self) -> GripperState:
@@ -473,16 +552,28 @@ class FakeBackend(RobotBackend):
             stamp=time.time(),
         )
 
-    async def _gripper_travel(self, target: float, speed: float) -> None:
-        dist = abs(target - self._gripper_width)
-        await anyio.sleep(dist / max(speed, 1e-3) / self.speedup)
+    async def _gripper_travel(self, target: float, speed: float, what: str) -> None:
+        """Move the fingers towards ``target`` in ticks; ``stop()`` halts them where they are."""
+        self._gripper_stop_requested = False
+        start = self._gripper_width
+        duration = abs(target - start) / max(speed, 1e-3) / self.speedup
+        t0 = time.monotonic()
+        while True:
+            frac = min(1.0, (time.monotonic() - t0) / duration) if duration > 0 else 1.0
+            self._gripper_width = start + frac * (target - start)
+            if frac >= 1.0:
+                return
+            if self._gripper_stop_requested:
+                self._grasped = False
+                raise BackendFailed(f"{what} stopped at {self._gripper_width:.4f} m (stop requested)")
+            await anyio.sleep(self.tick_s)
 
     async def gripper_move(self, width: float, speed: float) -> GripperState:
         if not 0.0 <= width <= self.gripper_max_width:
             raise BackendFailed(f"width {width} outside [0, {self.gripper_max_width}] m")
         if self.object_width is not None and self._grasped and width < self.object_width:
             raise BackendFailed("move blocked by grasped object; open the gripper first")
-        await self._gripper_travel(width, speed)
+        await self._gripper_travel(width, speed, "gripper move")
         self._gripper_width = width
         self._grasped = False
         return self._gripper_state()
@@ -491,7 +582,7 @@ class FakeBackend(RobotBackend):
         self, width: float, force: float, speed: float, epsilon_inner: float, epsilon_outer: float
     ) -> GripperState:
         final = self.object_width if self.object_width is not None else 0.0
-        await self._gripper_travel(final, speed)
+        await self._gripper_travel(final, speed, "gripper grasp")
         self._gripper_width = final
         self._grasped = (
             self.object_width is not None
