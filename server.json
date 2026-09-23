@@ -1,0 +1,50 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Lynn-hh/armguard-mcp",
+  "title": "armguard-mcp",
+  "description": "Safety-first MCP server for ROS 2 robot arms: server-side safety envelope, human approval, audit",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/Lynn-hh/armguard-mcp",
+  "repository": {
+    "url": "https://github.com/Lynn-hh/armguard-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "armguard-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "--policy",
+          "description": "Path to the safety policy YAML (see examples/policies/fr3.yaml). Read it before connecting a real robot.",
+          "format": "filepath",
+          "isRequired": true,
+          "valueHint": "policy_path"
+        },
+        {
+          "type": "named",
+          "name": "--backend",
+          "description": "Robot backend: 'fake' (simulated FR3, no ROS) or 'ros2' (needs a sourced ROS 2 environment).",
+          "choices": [
+            "fake",
+            "ros2"
+          ],
+          "default": "fake"
+        },
+        {
+          "type": "named",
+          "name": "--audit-log",
+          "description": "Append-only JSONL audit log path.",
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+# No-GPU demo: FR3 on franka_ros2 fake hardware + MoveIt 2, driven by armguard-mcp over HTTP.
+#
+# !!! EXPERIMENTAL / UNTESTED !!!
+# This sketch has not been run by the author yet (no Docker daemon was available), and the ROS 2
+# backend it relies on is still in progress. Launch-file names and arguments follow franka_ros2
+# conventions but may differ between releases; check the franka_ros2 README for your tag.
+#
+#   docker compose -f docker/compose.demo.yml up --build
+#   # MCP endpoint (loopback only on the host): http://127.0.0.1:8765/mcp
+#
+# Security: the HTTP transport has NO authentication. Inside the container it has to bind 0.0.0.0 so
+# that Docker can forward the port, which is why the port is published on the host's 127.0.0.1 only.
+# Do not change that to 0.0.0.0 or expose it to a network.
+
+x-ros-env: &ros-env
+  ROS_DOMAIN_ID: "42"
+  ROS_AUTOMATIC_DISCOVERY_RANGE: SUBNET
+  RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+
+services:
+  franka-sim:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: franka-sim
+    image: armguard-mcp:franka-sim
+    environment: *ros-env
+    # Fake hardware (mock components) + MoveIt, headless. Flip use_rviz to true with X11 forwarding.
+    command: >
+      -- ros2 launch franka_fr3_moveit_config moveit.launch.py
+      robot_ip:=dont-care use_fake_hardware:=true use_rviz:=false
+    networks: [ros]
+    healthcheck:
+      # Healthy once MoveIt's move_group action server is up.
+      test: ["CMD-SHELL", "/entrypoint.sh -- ros2 action list | grep -q move_action"]
+      interval: 10s
+      retries: 30
+
+  armguard:
+    image: armguard-mcp:franka-sim
+    depends_on:
+      franka-sim:
+        condition: service_healthy
+    environment: *ros-env
+    command: >
+      --policy /opt/armguard/examples/policies/fr3.yaml
+      --backend ros2
+      --transport http --host 0.0.0.0 --port 8765
+      --audit-log /home/armguard/audit/audit.jsonl
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - armguard-audit:/home/armguard/audit
+    networks: [ros]
+
+networks:
+  ros: {}
+
+volumes:
+  armguard-audit: {}

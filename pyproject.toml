@@ -9,17 +9,37 @@ description = "A safety-first MCP server for ROS 2 manipulators: plan/preview/ex
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
-authors = [{ name = "Lin He (Lynn)", email = "lynnhe02@gmail.com" }]
-keywords = ["mcp", "ros2", "robotics", "manipulation", "franka", "safety", "llm"]
+authors = [{ name = "Lin He", email = "lynnhe02@gmail.com" }]
+maintainers = [{ name = "Lin He", email = "lynnhe02@gmail.com" }]
+keywords = [
+  "mcp",
+  "model-context-protocol",
+  "ros2",
+  "moveit",
+  "ros2-control",
+  "robotics",
+  "manipulation",
+  "franka",
+  "fr3",
+  "safety",
+  "human-in-the-loop",
+  "llm",
+  "agents",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Framework :: AnyIO",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Human Machine Interfaces",
+  "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
   "mcp>=2.2,<3",
@@ -27,6 +47,13 @@ dependencies = [
   "pyyaml",
   "anyio>=4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Lynn-hh/armguard-mcp"
+Documentation = "https://github.com/Lynn-hh/armguard-mcp#readme"
+Repository = "https://github.com/Lynn-hh/armguard-mcp"
+Issues = "https://github.com/Lynn-hh/armguard-mcp/issues"
+Changelog = "https://github.com/Lynn-hh/armguard-mcp/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 # The ros2 backend needs rclpy, MoveIt 2 and franka_ros2 from a sourced ROS 2 installation

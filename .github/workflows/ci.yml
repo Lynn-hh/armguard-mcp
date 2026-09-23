@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Ruff (lint)
+        run: ruff check .
+      - name: Ruff (format)
+        run: ruff format --check .
+      - name: Tests (fake FR3 backend, no ROS)
+        run: pytest -q tests
+      - name: Demo script and tool table still run
+        run: |
+          python scripts/demo_fake.py > /dev/null
+          python scripts/gen_tool_table.py > /dev/null
+
+  ros-jazzy:
+    name: ros-jazzy (ROS 2 backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ros:jazzy
+    env:
+      # Keep DDS discovery on the runner's loopback; never talk to other hosts.
+      ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+      ROS_DOMAIN_ID: "42"
+      DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ROS message packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-venv python3-pip \
+            ros-jazzy-moveit-msgs \
+            ros-jazzy-control-msgs \
+            ros-jazzy-controller-manager-msgs
+          rm -rf /var/lib/apt/lists/*
+      - name: Create venv (sees the system rclpy)
+        run: |
+          python3 -m venv --system-site-packages /opt/venv
+          /opt/venv/bin/pip install --upgrade pip
+          /opt/venv/bin/pip install -e ".[dev]"
+      - name: ROS 2 backend tests
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source /opt/venv/bin/activate
+          python -c "import rclpy, armguard_mcp; print('rclpy ok, armguard-mcp', armguard_mcp.__version__)"
+          pytest -q tests_ros

@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "armguard": {
+      "type": "stdio",
+      "command": "/abs/path/to/armguard-mcp/.venv/bin/armguard-mcp",
+      "args": [
+        "--policy", "/abs/path/to/armguard-mcp/examples/policies/fr3.yaml",
+        "--backend", "fake",
+        "--audit-log", "/abs/path/to/armguard-mcp/audit.jsonl"
+      ]
+    },
+    "armguard-readonly": {
+      "type": "stdio",
+      "command": "/abs/path/to/armguard-mcp/.venv/bin/armguard-mcp",
+      "args": [
+        "--policy", "/abs/path/to/armguard-mcp/examples/policies/readonly.yaml",
+        "--backend", "fake"
+      ]
+    }
+  }
+}
