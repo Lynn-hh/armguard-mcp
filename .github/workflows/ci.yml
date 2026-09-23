@@ -67,7 +67,14 @@ jobs:
             python3-venv python3-pip \
             ros-jazzy-moveit-msgs \
             ros-jazzy-control-msgs \
-            ros-jazzy-controller-manager-msgs
+            ros-jazzy-controller-manager-msgs \
+            ros-jazzy-moveit-ros-move-group \
+            ros-jazzy-moveit-planners-ompl \
+            ros-jazzy-moveit-kinematics \
+            ros-jazzy-moveit-configs-utils \
+            ros-jazzy-moveit-simple-controller-manager \
+            ros-jazzy-moveit-resources-panda-moveit-config \
+            ros-jazzy-xacro
           rm -rf /var/lib/apt/lists/*
       - name: Create venv (sees the system rclpy)
         run: |
@@ -79,4 +86,4 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source /opt/venv/bin/activate
           python -c "import rclpy, armguard_mcp; print('rclpy ok, armguard-mcp', armguard_mcp.__version__)"
-          pytest -q tests_ros
+          pytest -q -rs tests_ros   # franka_msgs tests skip: franka_msgs is not on apt

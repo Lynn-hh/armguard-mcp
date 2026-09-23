@@ -34,10 +34,16 @@ First public version. Alpha: tested against a simulated FR3 only.
   `scripts/demo_fake.py`.
 - CI (unit tests on Python 3.10 and 3.12, ROS 2 Jazzy job), an experimental Docker sketch, and
   `server.json` for the MCP Registry.
+- ROS 2 backend (`--backend ros2`, `Ros2BackendConfig` under the policy's `ros2:` section or
+  `--ros2-config`). It covers MoveIt 2 planning and FK services, `FollowJointTrajectory` execution with
+  cancel, `controller_manager`, tf2, a `WrenchStamped` force estimate, the franka_gripper actions (or
+  `GripperCommand`), and the franka_hardware collision-behaviour service and error-recovery action.
+  Camera snapshots come from `Image` or `CompressedImage` topics. Integration tests in `tests_ros/` run
+  on ROS 2 Jazzy, including against a real MoveIt 2 `move_group`.
 
 ### Known limitations
 
-- ROS 2 backend in progress, and not validated on hardware.
+- ROS 2 backend not yet run on a physical robot.
 - HTTP transport without authentication.
 - The workspace check covers the TCP point only.
 

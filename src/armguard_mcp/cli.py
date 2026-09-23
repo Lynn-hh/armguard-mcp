@@ -31,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--host", default="127.0.0.1", help="HTTP bind address (default: 127.0.0.1)")
     p.add_argument("--port", type=int, default=8765, help="HTTP port (default: 8765)")
+    p.add_argument(
+        "--ros2-config",
+        default=None,
+        help="YAML file with ros2 backend settings (overrides the policy's ros2: section)",
+    )
     p.add_argument("--audit-log", default=None, help="append-only JSONL audit log path")
     p.add_argument("--dry-run", action="store_true", help="force dry-run on top of the policy: nothing moves")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -48,7 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     import anyio
 
     from armguard_mcp.backends import create_backend
-    from armguard_mcp.policy import PolicyError, load_policy
+    from armguard_mcp.policy import PolicyError, load_policy, load_ros2_config
     from armguard_mcp.safety.audit import AuditLogger
     from armguard_mcp.server import build
 
@@ -59,6 +64,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.dry_run:
         policy = policy.with_dry_run(True)
+    if args.ros2_config:
+        try:
+            policy = policy.model_copy(update={"ros2": load_ros2_config(args.ros2_config)})
+        except PolicyError as e:
+            print(f"armguard-mcp: {e}", file=sys.stderr)
+            return 2
 
     try:
         backend = create_backend(args.backend, policy)

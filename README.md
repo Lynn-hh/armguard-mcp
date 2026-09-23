@@ -18,8 +18,9 @@ a camera image or topic string, can change what the model *asks for*. It cannot 
 *allows*.
 
 > **Status: alpha.** The policy engine, safety envelope, approval flow, audit log and all 22 MCP tools run
-> against a simulated Franka FR3 backend and are covered by 89 tests. The ROS 2 backend (MoveIt 2,
-> `ros2_control`, `franka_ros2`) is in progress and has **not** been validated on hardware yet.
+> against a simulated Franka FR3 backend. The ROS 2 backend (MoveIt 2, `ros2_control`, `franka_ros2`) is
+> tested on ROS 2 Jazzy against real rclpy endpoints and a real MoveIt 2 `move_group`. It has **not**
+> been run on a physical robot yet.
 >
 > **This is defense in depth, NOT certified functional safety.** See
 > [Safety scope and non-goals](#safety-scope-and-non-goals).
@@ -29,6 +30,7 @@ a camera image or topic string, can change what the model *asks for*. It cannot 
 - [How it differs from generic ROS MCP bridges](#how-it-differs-from-generic-ros-mcp-bridges)
 - [Architecture](#architecture)
 - [Quick start (simulated FR3, no ROS needed)](#quick-start-simulated-fr3-no-ros-needed)
+- [ROS 2 backend](#ros-2-backend---backend-ros2)
 - [Tool reference](#tool-reference)
 - [The approval flow](#the-approval-flow)
 - [Policy reference](#policy-reference)
@@ -92,7 +94,7 @@ flowchart LR
 
     subgraph Backend["Robot backend"]
         Fake["fake FR3<br/>(kinematic sim, CI)"]
-        ROS["ROS 2 (in progress)<br/>MoveIt 2 · ros2_control · franka_ros2"]
+        ROS["ROS 2 (rclpy)<br/>MoveIt 2 · ros2_control · franka_ros2"]
     end
 
     Robot["FR3 + Franka safety system<br/>1 kHz control stays here"]
@@ -114,7 +116,7 @@ runs.
 git clone https://github.com/Lynn-hh/armguard-mcp && cd armguard-mcp
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-pytest -q                                   # 89 tests, a few seconds
+pytest -q                                   # unit tests, a few seconds (no ROS needed)
 
 # stdio (what desktop and CLI MCP clients launch)
 armguard-mcp --policy examples/policies/fr3.yaml --backend fake --audit-log audit.jsonl
@@ -126,7 +128,7 @@ armguard-mcp --policy examples/policies/fr3.yaml --backend fake --transport http
 python scripts/demo_fake.py
 ```
 
-`armguard-mcp --help` lists every flag: `--policy` (required), `--backend fake|ros2`,
+`armguard-mcp --help` lists every flag: `--policy` (required), `--backend fake|ros2`, `--ros2-config`,
 `--transport stdio|http`, `--host` (default `127.0.0.1`), `--port` (default `8765`), `--audit-log`,
 `--dry-run` (forces dry-run on top of the policy), `--log-level`, `--version`. Logs go to stderr only, so
 stdout carries nothing but MCP messages. A policy that fails validation, or a backend that is not
@@ -191,6 +193,80 @@ async with Client(server, elicitation_callback=ask_human) as client:
 ```
 
 For HTTP, pass the URL instead: `Client("http://127.0.0.1:8765/mcp")`.
+
+## ROS 2 backend (`--backend ros2`)
+
+The backend targets ROS 2 Jazzy (Python 3.12) with MoveIt 2 and franka_ros2 v3.x. Humble may work but
+has not been tested. `rclpy` is imported only when the ros2 backend is created, so the package installs
+and runs without ROS. If `rclpy` is missing, `--backend ros2` exits with status 2 and says what to source.
+
+```bash
+source /opt/ros/jazzy/setup.bash          # plus your franka_ros2 workspace (for franka_msgs)
+python3 -m venv --system-site-packages .venv-ros && . .venv-ros/bin/activate   # sees rclpy
+pip install -e .
+armguard-mcp --policy examples/policies/fr3.yaml --backend ros2 \
+             --ros2-config examples/ros2/fr3_franka_ros2_jazzy.yaml
+```
+
+| Capability | ROS 2 interface (default name) |
+|---|---|
+| Joint state | `sensor_msgs/JointState` on `/joint_states` (stale data is refused) |
+| TCP pose, `lookup_transform` | tf2, `robot.base_frame` → `robot.ee_frame` |
+| FK for envelope checks | MoveIt `/compute_fk`, or the built-in FR3 model (`fk_source: fr3_analytic`) |
+| Planning | MoveIt `/plan_kinematic_path` (joint or pose goal), `/compute_cartesian_path` |
+| Execution | `control_msgs/FollowJointTrajectory` on `/fr3_arm_controller/follow_joint_trajectory` |
+| Force monitoring | `geometry_msgs/WrenchStamped` on `/franka_robot_state_broadcaster/external_wrench_in_stiffness_frame` |
+| Controllers | `/controller_manager/list_controllers`, `/controller_manager/switch_controller` |
+| Gripper | franka_gripper `/franka_gripper/{move,grasp,homing}`, or `control_msgs/GripperCommand` |
+| Collision thresholds | franka_hardware `/service_server/set_force_torque_collision_behavior` |
+| Error recovery | franka_hardware `/action_server/error_recovery` |
+| Camera | `sensor_msgs/Image` (8-bit) or `CompressedImage` (PNG/JPEG), one-shot subscription |
+
+The defaults are the names in the franka_ros2 v3.5.3 sources for a launch without a namespace. **Check
+them on your setup** (`ros2 topic list`, `ros2 action list`). Every name is configurable, either in a `ros2:`
+section of the policy or in a file passed with `--ros2-config`. `franka_msgs` is not in the ROS apt
+repositories, so build it from franka_ros2. Without it, the gripper falls back to `GripperCommand`, and
+collision thresholds and error recovery report "not supported".
+
+How the backend behaves:
+
+- **It runs exactly what the envelope validated.** The trajectory it sends is built from the validated
+  plan's waypoints and timing. MoveIt's velocities and accelerations are attached only if they belong to
+  those same points. It refuses a plan that also moves joints the policy does not cover, such as the
+  fingers.
+- **It fails safe.** It refuses to execute when the wrench estimate is missing or stale
+  (`require_wrench`). It cancels the trajectory goal on `stop_motion`, on a force-limit abort and on a
+  controller timeout. It also cancels the goal when the MCP call itself is cancelled, for example because
+  the client disconnected.
+- **Threading.** One rclpy node with a reentrant callback group is spun by a `MultiThreadedExecutor` on a
+  daemon thread. It lives in a private `rclpy.Context` and installs no signal handlers. rclpy futures are
+  bridged to asyncio with `loop.call_soon_threadsafe`, so the server must run on asyncio, which is the MCP
+  SDK default. At start-up the backend waits, with a bound, for DDS discovery of its endpoints and logs
+  any that are missing.
+
+**Integration tests** (`tests_ros/`, needs a sourced ROS 2 environment; without one every test is
+reported as skipped):
+
+```bash
+source /opt/ros/jazzy/setup.bash && . .venv-ros/bin/activate && pytest -q tests_ros
+```
+
+The tests use a random `ROS_DOMAIN_ID` and `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`. They drive the
+backend both directly and through the full MCP server with an in-memory client. They run against an
+in-process fake FR3 cell made of real rclpy endpoints:
+
+- joint states and tf
+- a best-effort wrench topic
+- a `FollowJointTrajectory` server that interpolates in real time and honours cancel requests
+- controller_manager services
+- MoveIt-like planning and FK services
+- franka_gripper actions
+- franka_hardware services
+- camera topics
+
+`test_moveit_live.py` also starts a real MoveIt 2 `move_group`, using the Panda from
+`moveit_resources_panda_moveit_config` (same kinematic structure as the FR3). It checks OMPL planning, KDL
+IK, Cartesian paths and `/compute_fk` end to end. It is skipped when MoveIt is not installed.
 
 ## Tool reference
 
@@ -356,7 +432,7 @@ to the model.
 | `rate_limits` | section | see below | |
 | `approval` | section | see below | |
 | `dry_run` | bool | `false` | Validate and approve, but never move. `--dry-run` forces it on. |
-| `ros2` | section or null | `null` | Settings for the ROS 2 backend (node, topics, MoveIt services and planner, controller actions, gripper interface, timeouts), ignored by the fake backend. The ROS 2 backend is in progress; `src/armguard_mcp/backends/ros2_config.py` is the reference. |
+| `ros2` | section or null | `null` | Settings for the ROS 2 backend: where its topics, services and actions are, planner settings and timeouts. The fake backend ignores it, and `--ros2-config FILE` overrides it. See [ROS 2 backend](#ros-2-backend---backend-ros2) and `Ros2BackendConfig` in `src/armguard_mcp/backends/ros2_config.py`. |
 
 **`robot`** (all fields required)
 
@@ -484,11 +560,22 @@ fakes them, is in [docs/threat-model.md](docs/threat-model.md).
   tamper-evident.
 - Python 3.10 is in the CI matrix, but the author has only run the suite locally on 3.12.
 - `docker/` is an **experimental, untested** sketch.
+- The ROS 2 backend has been tested against simulated endpoints and a real `move_group`, but not against
+  franka_ros2 on a physical FR3. Check the topic, service and action names, the wrench frame and the
+  collision-threshold semantics on the real cell before you rely on them.
+- With the ROS 2 backend, force monitoring can react only as fast as the wrench topic is published and the
+  trajectory controller handles a cancel request. With `require_wrench: true` (the default), a missing
+  or stale wrench makes `execute_plan` refuse to move, and `get_robot_state` return an error.
+- `stop_motion` cancels only goals that armguard sent. It does not stop motions started by other tools,
+  for example MoveIt in RViz.
 
 ## Roadmap
 
-- [ ] ROS 2 Jazzy backend: MoveIt 2 planning, `FollowJointTrajectory` execution, `controller_manager`,
-      `franka_ros2` gripper and error recovery, tf2, camera topics (in progress; see `tests_ros/`).
+- [x] ROS 2 Jazzy backend: MoveIt 2 planning, `FollowJointTrajectory` execution, `controller_manager`,
+      `franka_ros2` gripper, collision thresholds and error recovery, tf2, camera topics (tested in
+      simulation and against a real `move_group`; see `tests_ros/`).
+- [ ] Bring-up on a physical FR3 with franka_ros2: check topic names, the wrench frame and the
+      collision-threshold semantics, and measure how quickly the force monitor reacts.
 - [ ] Isaac Sim demo: FR3 with MoveIt in simulation, driven by an agent through armguard-mcp.
 - [ ] Video on a real Franka FR3, with the hardware e-stop visible in frame.
 - [ ] Learned-skill actions from Isaac Lab exposed as skill tools, for example `insert_peg` with force

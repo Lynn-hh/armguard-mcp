@@ -33,7 +33,8 @@ src/armguard_mcp/
 │   ├── __init__.py     create_backend("fake" | "ros2"); imports the ros2 backend lazily
 │   ├── fake.py         Deterministic simulated FR3 (kinematics, planner, timed execution, virtual
 │   │                    table for contact forces, Franka Hand, generated images, fake ros2_control)
-│   └── ros2.py         ROS 2 backend (in progress; the only module that imports rclpy)
+│   ├── ros2.py         ROS 2 backend (the only module that imports rclpy, lazily)
+│   └── ros2_config.py  Ros2BackendConfig: the policy's `ros2:` section (no ROS imports)
 ├── kinematics.py       FR3 forward kinematics (modified DH) and numerical IK, pure Python
 ├── geometry.py         4×4 transforms and quaternions, pure Python (no numpy)
 └── imaging.py          Pure-Python PNG encoder; optional Pillow downscaling
@@ -166,15 +167,15 @@ Properties of a handle:
 - **Thread-safe shared state.** `SafetyState`, `PlanStore`, `RateLimiter` and `AuditLogger` guard their
   state with `threading.Lock`, so a backend may call into them from another thread (such as an rclpy
   callback) without corrupting them.
-- **The ROS 2 bridge** (backend in progress). `rclpy` has its own executor, which blocks in `spin()`. The
-  ROS 2 backend is designed to run a `MultiThreadedExecutor` on a dedicated daemon thread and to bridge
-  every call and action future back to the asyncio loop, for example with
-  `loop.call_soon_threadsafe(fut.set_result, …)`. Subscriptions (joint states, wrench, camera) write the
+- **The ROS 2 bridge.** `rclpy` has its own executor, which blocks in `spin()`. The ROS 2 backend runs a
+  `MultiThreadedExecutor` on a dedicated daemon thread, in a private `rclpy.Context`, and bridges every
+  service and action future back to the asyncio loop with `loop.call_soon_threadsafe`
+  (`Ros2Backend._await`). Subscriptions (joint states, wrench, camera) write the
   latest message into lock-protected caches, which the async methods read. The event loop never blocks on
   ROS, and ROS callbacks never touch MCP objects. `rclpy` is imported only inside
   `armguard_mcp.backends.ros2`, when `--backend ros2` is selected.
 - **Real time stays in `ros2_control`.** The server sends whole trajectories (FollowJointTrajectory in
-  the ROS 2 design) and gripper actions. The 1 kHz impedance and force loops run in the Franka controllers
+  the ROS 2 backend) and gripper actions. The 1 kHz impedance and force loops run in the Franka controllers
   and are never driven by the LLM or by Python.
 
 ## Extending

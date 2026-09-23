@@ -13,6 +13,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from armguard_mcp.backends.ros2_config import Ros2BackendConfig
+
 ToolGroup = Literal["introspect", "perception", "motion", "gripper", "control", "safety"]
 ApprovalClass = Literal[
     "execute", "switch_controllers", "reset_estop", "error_recovery", "set_collision_thresholds"
@@ -241,6 +243,9 @@ class Policy(_Strict):
     rate_limits: RateLimitsSection = Field(default_factory=RateLimitsSection)
     approval: ApprovalSection = Field(default_factory=ApprovalSection)
     dry_run: bool = False
+    ros2: Ros2BackendConfig | None = Field(
+        default=None, description="Connection settings of the ros2 backend (ignored by other backends)"
+    )
 
     @model_validator(mode="after")
     def _cross_checks(self) -> Policy:
@@ -284,3 +289,24 @@ def load_policy(path: str | Path) -> Policy:
     except OSError as e:
         raise PolicyError(f"cannot read policy file {p}: {e}") from e
     return Policy.from_yaml(text, source=str(p))
+
+
+def load_ros2_config(path: str | Path) -> Ros2BackendConfig:
+    """Load ros2 backend settings from a standalone YAML file (a mapping, optionally under ``ros2:``)."""
+    p = Path(path)
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as e:
+        raise PolicyError(f"cannot read ros2 config {p}: {e}") from e
+    if isinstance(data, dict) and set(data) == {"ros2"}:
+        data = data["ros2"]
+    if not isinstance(data, dict):
+        raise PolicyError(f"{p}: ros2 config must be a YAML mapping")
+    try:
+        return Ros2BackendConfig.model_validate(data)
+    except ValidationError as e:
+        lines = [f"{p}: invalid ros2 config ({e.error_count()} error(s))"]
+        lines += [
+            f"  - {'.'.join(str(x) for x in err['loc']) or '<root>'}: {err['msg']}" for err in e.errors()
+        ]
+        raise PolicyError("\n".join(lines)) from e

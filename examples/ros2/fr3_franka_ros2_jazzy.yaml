@@ -1,0 +1,48 @@
+# ros2 backend settings for an FR3 driven by franka_ros2 v3.x + MoveIt 2 on ROS 2 Jazzy.
+#
+#   armguard-mcp --policy examples/policies/fr3.yaml --backend ros2 \
+#                --ros2-config examples/ros2/fr3_franka_ros2_jazzy.yaml
+#
+# (The same keys can also go under a top-level `ros2:` section of the policy file.)
+# Names below were checked against the franka_ros2 v3.5.3 sources for a NON-namespaced launch
+# (franka_bringup + franka_fr3_moveit_config). VERIFY THEM ON YOUR SETUP with
+# `ros2 topic list`, `ros2 service list`, `ros2 action list`; a namespace prefixes all of them.
+# This file only says where things are; the safety limits live in the policy file.
+ros2:
+  joint_states_topic: /joint_states
+  joint_state_max_age_s: 0.5
+
+  # franka_robot_state_broadcaster convenience topic (best-effort QoS). The
+  # .../external_wrench_in_base_frame topic works too: the force/torque norms are identical.
+  wrench_topic: /franka_robot_state_broadcaster/external_wrench_in_stiffness_frame
+  wrench_max_age_s: 0.5
+  require_wrench: true          # refuse to move when the wrench estimate is missing or stale
+
+  # MoveIt 2 move_group services
+  fk_source: moveit             # or fr3_analytic (built-in FR3 + Franka Hand model, no /compute_fk)
+  compute_fk_service: /compute_fk
+  plan_service: /plan_kinematic_path
+  cartesian_path_service: /compute_cartesian_path
+  pipeline_id: ""               # "" = move_group default (ompl in franka_fr3_moveit_config)
+  planner_id: ""
+  planning_time_s: 5.0
+  cartesian_revolute_jump_threshold_rad: 0.3
+  cartesian_min_fraction: 1.0
+
+  # joint_trajectory_controller of franka_fr3_moveit_config
+  trajectory_action: /fr3_arm_controller/follow_joint_trajectory
+  goal_time_tolerance_s: 0.5
+  controller_manager: /controller_manager
+  switch_strictness: strict
+
+  # franka_gripper node (name `franka_gripper`): move / grasp / homing actions + joint_states
+  gripper_interface: auto       # franka if franka_msgs is importable, else control_msgs/GripperCommand
+  gripper_namespace: /franka_gripper
+  gripper_command_action: /franka_gripper/gripper_action
+  gripper_joint_states_topic: /franka_gripper/joint_states
+
+  # franka_hardware: FrankaParamServiceServer (node `service_server`) and FrankaActionServer
+  # (node `action_server`)
+  collision_behavior_service: /service_server/set_force_torque_collision_behavior
+  collision_joint_torque_thresholds_nm: [20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0]
+  error_recovery_action: /action_server/error_recovery
