@@ -1,0 +1,82 @@
+# armguard-mcp policy for a Franka Research 3 (FR3) with Franka Hand.
+#
+# Units: metres, radians, seconds, newtons. All frames are fr3_link0 (robot base) unless stated.
+# This file is enforced by the MCP server, outside the LLM. It is defense-in-depth and NOT a
+# substitute for the FR3 safety system, a risk assessment, or a reachable hardware e-stop.
+version: 1
+
+robot:
+  name: fr3
+  planning_group: fr3_arm
+  base_frame: fr3_link0
+  ee_frame: fr3_hand_tcp
+  joint_names: [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
+  # Position limits from the FR3 datasheet. Velocity / acceleration values are the published
+  # Franka arm limits; verify them against the documentation for your robot and firmware.
+  joint_limits:
+    fr3_joint1: {min: -2.7437, max: 2.7437, max_velocity: 2.62, max_acceleration: 15.0}
+    fr3_joint2: {min: -1.7837, max: 1.7837, max_velocity: 2.62, max_acceleration: 7.5}
+    fr3_joint3: {min: -2.9007, max: 2.9007, max_velocity: 2.62, max_acceleration: 10.0}
+    fr3_joint4: {min: -3.0421, max: -0.1518, max_velocity: 2.62, max_acceleration: 12.5}
+    fr3_joint5: {min: -2.8065, max: 2.8065, max_velocity: 5.26, max_acceleration: 15.0}
+    fr3_joint6: {min: 0.5445, max: 4.5169, max_velocity: 4.18, max_acceleration: 20.0}
+    fr3_joint7: {min: -3.0159, max: 3.0159, max_velocity: 5.26, max_acceleration: 20.0}
+  # Franka "ready" pose: [0, -pi/4, 0, -3pi/4, 0, pi/2, pi/4]
+  home_joint_positions: [0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, 0.785398]
+
+tools:
+  # safety (stop_motion, estop, reset_estop, error_recovery, get_safety_status) is always on.
+  enabled: [introspect, perception, motion, gripper, control, safety]
+
+workspace:
+  # The TCP must stay inside this box for every sampled point of a plan.
+  box: {min: [0.15, -0.55, 0.03], max: [0.80, 0.55, 0.90]}
+  keep_out:
+    - {name: camera_mount, min: [0.55, 0.35, 0.0], max: [0.80, 0.55, 0.60]}
+    - {name: robot_base_column, min: [-0.20, -0.20, -0.10], max: [0.20, 0.20, 0.30]}
+
+motion:
+  max_velocity_scaling: 0.3
+  max_acceleration_scaling: 0.3
+  default_velocity_scaling: 0.1
+  default_acceleration_scaling: 0.1
+  max_joint_step_rad: 1.6        # no joint may travel more than this in one plan (hard)
+  soft_joint_step_rad: 0.8       # larger motions need human approval in outside_envelope mode
+  max_cartesian_step_m: 0.30     # TCP path length cap for one Cartesian plan (hard)
+  plan_ttl_s: 120
+  joint_limit_margin_rad: 0.05   # closer than this to a limit => needs approval
+  start_tolerance_rad: 0.01      # robot moved more than this since planning => stale plan
+  check_resolution_rad: 0.02
+  cartesian_eef_step_m: 0.005
+
+force:
+  max_contact_force_n: 25.0      # abort + latch if the external force exceeds this during execution
+  max_contact_torque_nm: 5.0
+  monitor_rate_hz: 200
+
+gripper:
+  min_width_m: 0.0
+  max_width_m: 0.08
+  max_grasp_force_n: 40.0
+  max_speed_mps: 0.1
+
+controllers:
+  allowlist: [fr3_arm_controller, cartesian_impedance_controller, joint_impedance_controller]
+
+perception:
+  camera_topics: [/camera/color/image_raw, /wrist_camera/color/image_raw]
+  max_image_width: 320
+
+rate_limits:
+  global_per_minute: 120
+  default_per_minute: 60
+  per_tool:
+    execute_plan: 10
+    camera_snapshot: 20
+
+approval:
+  mode: outside_envelope          # always | outside_envelope | never (reset_estop always asks)
+  on_client_without_elicitation: deny
+  require_for: [execute, switch_controllers, reset_estop, error_recovery, set_collision_thresholds]
+
+dry_run: false

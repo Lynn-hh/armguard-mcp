@@ -1,0 +1,43 @@
+# Read-only armguard-mcp policy: the LLM can observe the FR3 but cannot move it.
+# Only introspect + perception are enabled; the safety group (stop_motion, estop,
+# get_safety_status, ...) is always registered and cannot be disabled.
+version: 1
+
+robot:
+  name: fr3
+  planning_group: fr3_arm
+  base_frame: fr3_link0
+  ee_frame: fr3_hand_tcp
+  joint_names: [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
+  joint_limits:
+    fr3_joint1: {min: -2.7437, max: 2.7437, max_velocity: 2.62}
+    fr3_joint2: {min: -1.7837, max: 1.7837, max_velocity: 2.62}
+    fr3_joint3: {min: -2.9007, max: 2.9007, max_velocity: 2.62}
+    fr3_joint4: {min: -3.0421, max: -0.1518, max_velocity: 2.62}
+    fr3_joint5: {min: -2.8065, max: 2.8065, max_velocity: 5.26}
+    fr3_joint6: {min: 0.5445, max: 4.5169, max_velocity: 4.18}
+    fr3_joint7: {min: -3.0159, max: 3.0159, max_velocity: 5.26}
+  home_joint_positions: [0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, 0.785398]
+
+tools:
+  enabled: [introspect, perception]
+
+workspace:
+  box: {min: [0.15, -0.55, 0.03], max: [0.80, 0.55, 0.90]}
+
+motion:
+  max_velocity_scaling: 0.1
+  max_acceleration_scaling: 0.1
+  max_joint_step_rad: 0.5
+  max_cartesian_step_m: 0.1
+
+force:
+  max_contact_force_n: 20.0
+  max_contact_torque_nm: 5.0
+
+perception:
+  camera_topics: [/camera/color/image_raw]
+  max_image_width: 320
+
+approval:
+  mode: always
