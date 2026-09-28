@@ -6,6 +6,7 @@
 ![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E)
 ![MCP 2026-07-28](https://img.shields.io/badge/MCP-2026--07--28-black)
 ![status: alpha](https://img.shields.io/badge/status-alpha-orange)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/lynn-hh/armguard-mcp?variant=verified)](https://m8ven.ai/mcp/lynn-hh/armguard-mcp)
 
 <!-- mcp-name: io.github.Lynn-hh/armguard-mcp -->
 
