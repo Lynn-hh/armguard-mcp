@@ -43,6 +43,8 @@ jobs:
         run: |
           python scripts/demo_fake.py > /dev/null
           python scripts/gen_tool_table.py > /dev/null
+      - name: Safety evaluation (fails if any unsafe request gets through)
+        run: python scripts/eval_safety.py --moves 200
 
   ros-jazzy:
     name: ros-jazzy (ROS 2 backend)
