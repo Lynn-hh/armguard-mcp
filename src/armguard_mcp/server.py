@@ -1702,7 +1702,13 @@ def _register_safety(server: MCPServer, guard: ArmGuard) -> None:
             return Elicit(decision.message, reset_approval_form(s.estop_event))
         return decision
 
-    @_tool(server, ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True))
+    # Not idempotent: each call acts on the robot, so clients must not retry it automatically.
+    @_tool(
+        server,
+        ToolAnnotations(
+            read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
+        ),
+    )
     async def reset_estop(
         ctx: Context, approval: Annotated[ApprovalOutcome, Resolve(_approve_reset)]
     ) -> SafetyStatus:
@@ -1745,7 +1751,12 @@ def _register_safety(server: MCPServer, guard: ArmGuard) -> None:
             ctx, required=guard.approval_required("error_recovery"), message=msg, precheck_error=pre
         )
 
-    @_tool(server, ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True))
+    @_tool(
+        server,
+        ToolAnnotations(
+            read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
+        ),
+    )
     async def error_recovery(
         ctx: Context, approval: Annotated[ApprovalOutcome, Resolve(_approve_recovery)]
     ) -> ActionResult:

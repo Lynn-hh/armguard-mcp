@@ -43,6 +43,8 @@ First public version. Alpha: tested against a simulated FR3 only.
 
 ### Fixed (adversarial review, before release)
 
+- `reset_estop` and `error_recovery` now declare `idempotentHint: false`, so every tool carries all four
+  MCP annotation hints and clients do not retry these robot-acting tools automatically.
 - `execute_plan` claims the single execution slot before its first `await`. Before, an `estop` or
   `stop_motion` that arrived while the plan was being re-validated was lost and the whole trajectory ran
   with the e-stop latched, and two concurrent calls could both reach the backend.

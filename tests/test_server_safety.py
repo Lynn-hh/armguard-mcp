@@ -183,6 +183,13 @@ async def test_tool_annotations_and_hidden_approval_parameter() -> None:
     assert tools["plan_to_joints"].annotations.read_only_hint is True
     assert "server-side" in tools["get_safety_envelope"].description
     assert "rad" in tools["plan_to_joints"].description
+    # Every tool declares all four hints, so clients never fall back to spec defaults.
+    hints = ("read_only_hint", "destructive_hint", "idempotent_hint", "open_world_hint")
+    missing = {name: [h for h in hints if getattr(t.annotations, h) is None] for name, t in tools.items()}
+    assert not {name: m for name, m in missing.items() if m}
+    # Robot-acting safety tools must not be retried automatically.
+    assert tools["reset_estop"].annotations.idempotent_hint is False
+    assert tools["error_recovery"].annotations.idempotent_hint is False
 
 
 # --- gripper -------------------------------------------------------------------------------
