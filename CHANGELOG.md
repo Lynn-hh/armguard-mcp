@@ -10,6 +10,8 @@ First public version. Alpha: tested against a simulated FR3 only.
 
 ### Added
 
+- `skills/armguard-mcp/SKILL.md`: an agent skill describing the safe operating loop, approval, e-stop and
+  what an agent must never attempt.
 - `scripts/eval_safety.py`: reproducible safety evaluation on the fake FR3 (23 unsafe-request scenarios,
   checked by counting actuation commands at the backend; a random safe-move workload with an independent
   envelope check; planning latency). CI runs it on every push. Results are in the README.

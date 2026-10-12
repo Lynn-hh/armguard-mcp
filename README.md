@@ -187,6 +187,13 @@ Start with `--dry-run` or [`examples/policies/readonly.yaml`](examples/policies/
 registers only 12 read-only and safety tools, until you have read the policy. If your client does not
 support elicitation, every action that needs approval is denied. That is deliberate.
 
+### Agent skill
+
+[skills/armguard-mcp/SKILL.md](skills/armguard-mcp/SKILL.md) is an agent skill (the `SKILL.md` format used by
+Claude Code and other agents) that teaches an agent the look, plan, review, execute loop, how human
+approval and the e-stop work, and what it must never attempt. Copy the `skills/armguard-mcp/` folder into
+your agent's skills directory (for Claude Code: `.claude/skills/` in your project or `~/.claude/skills/`).
+
 ### Any MCP client (Python SDK v2)
 
 [examples/python_client.py](examples/python_client.py) is runnable; this is the core of it:
