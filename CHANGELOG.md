@@ -10,6 +10,9 @@ First public version. Alpha: tested against a simulated FR3 only.
 
 ### Added
 
+- `scripts/eval_link_collisions.py`: link-geometry check of the safe-move workload with NVIDIA Newton (FR3 URDF
+  forward kinematics, collision meshes vs. keep-out zones, self-collision). Documents the TCP-only envelope's gap:
+  0/1000 near-home plans but 84/201 near-zone plans put the hand or a wrist link inside a keep-out zone.
 - `skills/armguard-mcp/SKILL.md`: an agent skill describing the safe operating loop, approval, e-stop and
   what an agent must never attempt.
 - `scripts/eval_safety.py`: reproducible safety evaluation on the fake FR3 (23 unsafe-request scenarios,

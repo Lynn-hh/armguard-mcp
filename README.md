@@ -40,8 +40,9 @@ a camera image or topic string, can change what the model *asks for*. It cannot 
   in the evaluation suite were refused, clamped, rate-limited or aborted, and **no unintended command reached the
   robot**. **1000/1000 random safe moves** executed, with none leaving the envelope. Planning with the full
   safety check takes a median of **~16 ms** per call.
-- **Limits.** Not yet run on a physical robot; the simulated backend is kinematic only; this is defense
-  in depth, not certified safety. See [Known limitations](#known-limitations).
+- **Limits.** Not yet run on a physical robot; the simulated backend is kinematic only; the envelope checks
+  the TCP path, not link geometry (measured: 84/201 near-zone plans clip a zone with the hand or wrist); this
+  is defense in depth, not certified safety. See [Known limitations](#known-limitations).
 
 ## Contents
 
@@ -282,6 +283,32 @@ limits are raised for this run only; scenario 23 above covers them.
 | `plan_to_pose` round trip, median / p95 | 15.9 ms / 22.8 ms |
 
 A run with `--moves 1000 --seed 1` gives 1000/1000 executed, 0 rejected, 0 outside the envelope.
+
+**3. Link geometry (physics-model check).** The envelope checks the TCP path only. To measure what that
+misses, `scripts/eval_link_collisions.py` replays the joint waypoints of every accepted plan through the
+Franka FR3 URDF in [NVIDIA Newton](https://github.com/newton-physics/newton): forward kinematics per
+waypoint, every link's collision mesh transformed into the world, vertices tested against the keep-out
+boxes, and a signed-distance self-collision check between non-adjacent links. (Newton's FK agrees with
+armguard's own FR3 kinematics to 0.00 mm.)
+
+```bash
+pip install newton GitPython            # Newton physics engine; the FR3 asset is downloaded on first run
+python scripts/eval_link_collisions.py --workload home --moves 1000
+python scripts/eval_link_collisions.py --workload near-zone --moves 300
+```
+
+| Workload | Accepted plans | Plans in which a link beyond the shoulder enters a keep-out zone | Deepest link penetration | Self-collisions |
+|---|---|---|---|---|
+| `home`: random targets within 12 cm of the home pose (the workload above) | 1000 / 1000 | **0 / 1000** (closest approach 0.9 cm, link3 vs. the base column) | 0 | 0 of 44 link pairs |
+| `near-zone`: targets 2 to 8 cm outside a keep-out box | 201 / 300 | **84 / 201** | 7.9 cm (hand in `camera_mount`); wrist links 5 to 7 up to 6.2 cm | 0 of 44 link pairs |
+
+So the TCP-only envelope is sufficient for small moves near home, and insufficient when a target lies just
+outside a zone: the TCP path stays clear, as checked, while the hand body or the wrist links swing through
+the box. This is the "elbow can still enter a keep-out box" limitation below, now with a number. A
+link-level check is on the roadmap. Caveats: the check is kinematic (no dynamics); it tests collision-mesh
+vertices, so a box that only touches a face between vertices is missed; the self-collision check samples
+300 vertices per link; link0 to link2 sit inside `robot_base_column` by design and are excluded from the
+headline count.
 
 **How to read these numbers.**
 
@@ -684,7 +711,9 @@ fakes them, is in [docs/threat-model.md](docs/threat-model.md).
   `tcp_check_resolution_m` apart, every segment tested against the keep-out boxes. The real TCP arc
   deviates from those chords by roughly step²/(8·R), well under a millimetre at the default 1 cm for any
   realistic radius of curvature, so give keep-out boxes a few millimetres of margin. It does not check link
-  geometry against the workspace or keep-out zones, so an elbow can still enter a keep-out box.
+  geometry against the workspace or keep-out zones, so an elbow can still enter a keep-out box: in the
+  [link-geometry check](#evaluation), 84 of 201 accepted plans with targets just outside a zone put the hand
+  or a wrist link inside it. Keep targets away from zones, or wait for the link-level check on the roadmap.
 - Force monitoring uses the backend's *estimated* external wrench, polled at `monitor_rate_hz` from
   Python. It is a software backstop behind the robot's reflexes, not a real-time loop. It fails closed
   (see [the approval flow](#the-approval-flow), step 6), but it can only react as fast as the wrench is
@@ -718,6 +747,8 @@ fakes them, is in [docs/threat-model.md](docs/threat-model.md).
 - [x] ROS 2 Jazzy backend: MoveIt 2 planning, `FollowJointTrajectory` execution, `controller_manager`,
       `franka_ros2` gripper, collision thresholds and error recovery, tf2, camera topics (tested in
       simulation and against a real `move_group`; see `tests_ros/`).
+- [ ] Link-level keep-out and workspace check (collision meshes or capsules from the URDF), so the
+      envelope covers the whole arm and not only the TCP path (measured gap: `scripts/eval_link_collisions.py`).
 - [ ] Bring-up on a physical FR3 with franka_ros2: check topic names, the wrench frame and the
       collision-threshold semantics, and measure how quickly the force monitor reacts.
 - [ ] Isaac Sim demo: FR3 with MoveIt in simulation, driven by an agent through armguard-mcp.
