@@ -1,0 +1,56 @@
+name: release
+
+# Tag a release (git tag v0.1.0 && git push origin v0.1.0) to publish to PyPI through
+# trusted publishing and then to the MCP registry through GitHub OIDC. Neither step
+# needs a stored secret: PyPI must list this repository, workflow and environment as a
+# trusted publisher, and the registry accepts the io.github.Lynn-hh namespace from
+# this repository's Actions.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - run: uvx twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  mcp-registry:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mcp-publisher
+        run: |
+          curl -sSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/').tar.gz" | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+      - name: Check that server.json matches the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(python3 -c 'import json; print(json.load(open("server.json"))["version"])')
+          test "$tag" = "$version" || { echo "server.json version $version != tag $tag"; exit 1; }
+      - run: mcp-publisher login github-oidc
+      - run: mcp-publisher publish
