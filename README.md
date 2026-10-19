@@ -1,6 +1,7 @@
 # armguard-mcp
 
 [![CI](https://github.com/Lynn-hh/armguard-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Lynn-hh/armguard-mcp/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/armguard-mcp.svg)](https://pypi.org/project/armguard-mcp/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Python 3.10 | 3.12](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue)
 ![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E)
@@ -131,6 +132,16 @@ controllers. The server checks a whole trajectory before it runs and watches the
 runs.
 
 ## Quick start (simulated FR3, no ROS needed)
+
+From PyPI, no clone needed:
+
+```bash
+pip install armguard-mcp                    # or run it without installing: uvx armguard-mcp ...
+curl -O https://raw.githubusercontent.com/Lynn-hh/armguard-mcp/main/examples/policies/fr3.yaml
+armguard-mcp --policy fr3.yaml --backend fake --audit-log audit.jsonl
+```
+
+From source, for the tests, the demo and the evaluation scripts:
 
 ```bash
 git clone https://github.com/Lynn-hh/armguard-mcp && cd armguard-mcp
