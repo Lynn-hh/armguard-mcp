@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file. The format 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-24
+
+### Added
+
+- `armguard-mcp` runs without arguments: with the simulated backend and no `--policy`, the server uses a
+  bundled copy of `examples/policies/fr3.yaml` (`armguard_mcp.policy.bundled_policy_path`). The ros2
+  backend still requires an explicit policy file. `uvx armguard-mcp` is now a one-line try-out.
+- `docs/demo.gif` (`scripts/make_demo_gif.py`): the abridged demo as a GIF for places that do not animate
+  the SVG, and a "Try it in 60 seconds" section in the README with Claude Desktop / Claude Code / Cursor
+  configuration.
+
 ## [0.1.0] - 2026-10-19
 
 First public version. Alpha: tested against a simulated FR3 only.

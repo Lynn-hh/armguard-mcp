@@ -3,7 +3,7 @@
   "name": "io.github.Lynn-hh/armguard-mcp",
   "title": "armguard-mcp",
   "description": "Safety-first MCP server for ROS 2 robot arms: server-side safety envelope, human approval, audit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "websiteUrl": "https://github.com/Lynn-hh/armguard-mcp",
   "repository": {
     "url": "https://github.com/Lynn-hh/armguard-mcp",
@@ -14,7 +14,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "armguard-mcp",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -23,9 +23,9 @@
         {
           "type": "named",
           "name": "--policy",
-          "description": "Path to the safety policy YAML (see examples/policies/fr3.yaml). Read it before connecting a real robot.",
+          "description": "Path to the safety policy YAML (see examples/policies/fr3.yaml). Optional with the fake backend, which then uses the bundled FR3 policy; required with --backend ros2. Read it before connecting a real robot.",
           "format": "filepath",
-          "isRequired": true,
+          "isRequired": false,
           "valueHint": "policy_path"
         },
         {

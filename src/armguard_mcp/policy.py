@@ -301,6 +301,17 @@ class Policy(_Strict):
         return cls.from_dict(data, source=source)
 
 
+def bundled_policy_path(name: str = "fr3") -> Path:
+    """Path of a policy shipped inside the package, a verbatim copy of ``examples/policies/<name>.yaml``.
+
+    The bundled FR3 policy is what ``armguard-mcp`` uses when ``--policy`` is omitted with the simulated
+    backend, so the server can be tried without checking out the repository.
+    """
+    from importlib.resources import files  # noqa: PLC0415
+
+    return Path(str(files("armguard_mcp") / "policies" / f"{name}.yaml"))
+
+
 def load_policy(path: str | Path) -> Policy:
     p = Path(path)
     try:

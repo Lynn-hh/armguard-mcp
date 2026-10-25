@@ -27,9 +27,41 @@ a camera image or topic string, can change what the model *asks for*. It cannot 
 > **This is defense in depth, NOT certified functional safety.** See
 > [Safety scope and non-goals](#safety-scope-and-non-goals).
 
-## At a glance
+<p align="center"><img src="docs/demo.gif" alt="armguard-mcp demo: a small move runs, a large move needs human approval, a keep-out request is rejected and cannot be executed, and the e-stop blocks planning" width="820"></p>
 
-<p align="center"><img src="docs/demo.svg" alt="armguard-mcp demo: a small move runs, a large move needs human approval, a keep-out request is rejected and cannot be executed, and the e-stop blocks planning" width="820"></p>
+<p align="center"><sub>Real output of <code>scripts/demo_fake.py</code> against the simulated FR3, abridged (<a href="docs/demo.md">full transcript</a>).</sub></p>
+
+## Try it in 60 seconds
+
+No ROS, no clone. The package ships the FR3 demo policy, so the simulated arm starts with one command:
+
+```bash
+uvx armguard-mcp            # or: pip install armguard-mcp && armguard-mcp
+```
+
+Point your MCP client at it and ask it to move the arm. **Claude Desktop** (`claude_desktop_config.json`)
+and **Cursor** (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "armguard": { "command": "uvx", "args": ["armguard-mcp"] }
+  }
+}
+```
+
+**Claude Code**:
+
+```bash
+claude mcp add armguard -- uvx armguard-mcp
+```
+
+Then try, in order: *"Where is the arm?"*, *"Move the gripper 10 cm up"* (runs), *"Rotate joint 1 by
+50 degrees"* (asks you to approve), *"Move to x=0.62, y=0.42, z=0.30"* (refused: that is inside the
+`camera_mount` keep-out zone). Every decision lands in the audit log; `--audit-log audit.jsonl` keeps it.
+The bundled policy is for the simulated robot only: `--backend ros2` always requires your own `--policy`.
+
+## At a glance
 
 - **Problem.** An LLM agent that can call robot tools can be wrong, or be steered by a prompt injection
   hidden in an image or a topic string. One bad tool call moves a real arm.
@@ -133,12 +165,12 @@ runs.
 
 ## Quick start (simulated FR3, no ROS needed)
 
-From PyPI, no clone needed:
+From PyPI, no clone needed (the bundled FR3 policy is used when `--policy` is omitted):
 
 ```bash
 pip install armguard-mcp                    # or run it without installing: uvx armguard-mcp ...
-curl -O https://raw.githubusercontent.com/Lynn-hh/armguard-mcp/main/examples/policies/fr3.yaml
-armguard-mcp --policy fr3.yaml --backend fake --audit-log audit.jsonl
+armguard-mcp --audit-log audit.jsonl        # simulated FR3, bundled policy
+armguard-mcp --policy my_policy.yaml        # your own policy (required for --backend ros2)
 ```
 
 From source, for the tests, the demo and the evaluation scripts:

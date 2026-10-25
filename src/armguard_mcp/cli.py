@@ -1,4 +1,7 @@
-"""Command-line entry point: ``armguard-mcp --policy fr3.yaml [--backend fake|ros2] [--transport stdio|http]``.
+"""Command-line entry point: ``armguard-mcp [--policy fr3.yaml] [--backend fake|ros2] [--transport stdio|http]``.
+
+Without ``--policy`` the simulated backend runs with the bundled FR3 policy; the ros2 backend always
+needs an explicit policy file.
 
 On the stdio transport stdout carries the MCP protocol, so all logging goes to stderr.
 """
@@ -23,7 +26,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="armguard-mcp",
         description="Safety-first MCP server for ROS 2 manipulators (server-side safety envelope).",
     )
-    p.add_argument("--policy", required=True, help="path to the safety policy YAML")
+    p.add_argument(
+        "--policy",
+        default=None,
+        help=(
+            "path to the safety policy YAML. Optional with --backend fake (the bundled FR3 policy, a copy of "
+            "examples/policies/fr3.yaml, is used); required with --backend ros2"
+        ),
+    )
     p.add_argument(
         "--backend", choices=["fake", "ros2"], default="fake", help="robot backend (default: fake)"
     )
@@ -44,6 +54,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def resolve_policy_path(policy: str | None, backend: str) -> str:
+    """Return the policy file to load, or raise ``ValueError`` when the ros2 backend has none.
+
+    The bundled demo policy only ever stands in for the simulated robot: a real arm must run with a policy
+    the operator wrote and read.
+    """
+    if policy is not None:
+        return policy
+    if backend != "fake":
+        raise ValueError("--policy is required with --backend ros2 (the bundled demo policy is for the simulated FR3 only)")
+    from armguard_mcp.policy import bundled_policy_path  # noqa: PLC0415
+
+    return str(bundled_policy_path("fr3"))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
@@ -59,8 +84,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     from armguard_mcp.server import build
 
     try:
-        policy = load_policy(args.policy)
-    except PolicyError as e:
+        policy_path = resolve_policy_path(args.policy, args.backend)
+        policy = load_policy(policy_path)
+    except (PolicyError, ValueError) as e:
         print(f"armguard-mcp: {e}", file=sys.stderr)
         return 2
     if args.dry_run:
