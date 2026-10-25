@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_bundled_policy_is_a_copy_of_the_example() -> None:
     bundled = bundled_policy_path("fr3")
-    assert bundled.read_text(encoding="utf-8") == (ROOT / "examples" / "policies" / "fr3.yaml").read_text(encoding="utf-8")
+    assert bundled.read_text(encoding="utf-8") == (ROOT / "examples" / "policies" / "fr3.yaml").read_text(
+        encoding="utf-8"
+    )
     assert load_policy(bundled).robot == load_policy(ROOT / "examples" / "policies" / "fr3.yaml").robot
 
 

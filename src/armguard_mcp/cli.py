@@ -63,8 +63,10 @@ def resolve_policy_path(policy: str | None, backend: str) -> str:
     if policy is not None:
         return policy
     if backend != "fake":
-        raise ValueError("--policy is required with --backend ros2 (the bundled demo policy is for the simulated FR3 only)")
-    from armguard_mcp.policy import bundled_policy_path  # noqa: PLC0415
+        raise ValueError(
+            "--policy is required with --backend ros2 (the bundled demo policy is for the simulated FR3 only)"
+        )
+    from armguard_mcp.policy import bundled_policy_path
 
     return str(bundled_policy_path("fr3"))
 

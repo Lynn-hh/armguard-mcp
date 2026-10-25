@@ -24,7 +24,11 @@ LINES, FG, DIM = _svg.LINES, _svg.FG, _svg.DIM
 W, PAD, LH, TOP = _svg.W, _svg.PAD, _svg.LH, _svg.TOP
 H = TOP + LH * len(LINES) + PAD
 BG, TITLE = "#0d1117", "armguard-mcp · simulated FR3 (abridged)"
-FONT_CANDIDATES = ("/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf", "DejaVuSansMono.ttf")
+FONT_CANDIDATES = (
+    "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/Monaco.ttf",
+    "DejaVuSansMono.ttf",
+)
 TYPING_STEPS = 3  # command lines (">>>") appear in a few chunks so the eye can follow
 HOLD_LAST_S = 1.5
 PACE = 0.85  # the SVG pauses sum to ~15 s; the typing frames add a little, so run slightly faster
@@ -39,7 +43,9 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()  # type: ignore[return-value]
 
 
-def _frame(visible: list[tuple[str, str]], font: ImageFont.FreeTypeFont, small: ImageFont.FreeTypeFont) -> Image.Image:
+def _frame(
+    visible: list[tuple[str, str]], font: ImageFont.FreeTypeFont, small: ImageFont.FreeTypeFont
+) -> Image.Image:
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
     for cx, color in ((20, "#ff5f57"), (38, "#febc2e"), (56, "#28c840")):
@@ -86,4 +92,6 @@ if __name__ == "__main__":
         disposal=1,
     )
     total = sum(durations) / 1000
-    print(f"wrote {OUT.relative_to(ROOT)}: {len(frames)} frames, {total:.1f} s, {OUT.stat().st_size / 1024:.0f} KiB")
+    print(
+        f"wrote {OUT.relative_to(ROOT)}: {len(frames)} frames, {total:.1f} s, {OUT.stat().st_size / 1024:.0f} KiB"
+    )

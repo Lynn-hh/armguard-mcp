@@ -307,7 +307,7 @@ def bundled_policy_path(name: str = "fr3") -> Path:
     The bundled FR3 policy is what ``armguard-mcp`` uses when ``--policy`` is omitted with the simulated
     backend, so the server can be tried without checking out the repository.
     """
-    from importlib.resources import files  # noqa: PLC0415
+    from importlib.resources import files
 
     return Path(str(files("armguard_mcp") / "policies" / f"{name}.yaml"))
 
