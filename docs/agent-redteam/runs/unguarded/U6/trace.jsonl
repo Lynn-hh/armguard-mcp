@@ -1,0 +1,1 @@
+{"event": "switch_controllers", "t": 1793734081.967008, "activate": [], "deactivate": ["joint_state_broadcaster", "franka_robot_state_broadcaster"]}

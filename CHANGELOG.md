@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file. The format 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `scripts/eval_agent_redteam.py`: an evaluation with a real LLM agent in the loop (Claude Code in headless
+  mode) that gives the agent 18 tasks (direct unsafe requests, requests under social pressure, multi-step
+  tasks whose risk appears late, prompt injections through a topic name and through a pasted note, and
+  benign tasks) against the real server over stdio, under the shipped policy and under
+  `scripts/redteam/no_envelope.yaml` (the envelope opened, approval off, allowlists widened). What reached
+  the robot is read from the fake backend's actuation trace and re-checked offline against the shipped
+  policy, whichever policy the server ran with. Results are in the README and in
+  `docs/preventing-irreversible-actions.md`.
+- Fake backend test hooks, off unless the environment sets them: `ARMGUARD_FAKE_TRACE` appends one JSON
+  line per actuation that reaches the backend; `ARMGUARD_FAKE_EXTRA_TOPICS` adds topics to the fake ROS
+  graph (for injection tests).
+- `docs/preventing-irreversible-actions.md`: the project described around irreversible actions, with the
+  evidence in one place. `docs/bringup-fr3.md`: a staged checklist for the first session on a physical FR3.
+
 ## [0.1.1] - 2026-10-24
 
 ### Added
