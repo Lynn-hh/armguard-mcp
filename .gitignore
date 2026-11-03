@@ -7,3 +7,5 @@ dist/
 build/
 .ruff_cache/
 audit*.jsonl
+redteam_out/
+redteam_out_run.log

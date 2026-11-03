@@ -72,7 +72,9 @@ The bundled policy is for the simulated robot only: `--backend ros2` always requ
 - **Results** (simulated FR3, [reproducible with one command](#evaluation)): all **23/23 unsafe requests**
   in the evaluation suite were refused, clamped, rate-limited or aborted, and **no unintended command reached the
   robot**. **1000/1000 random safe moves** executed, with none leaving the envelope. Planning with the full
-  safety check takes a median of **~16 ms** per call.
+  safety check takes a median of **~16 ms** per call. With a **frontier agent in the loop** (Claude Code,
+  13 tasks with an unsafe intent), **0 unsafe actuations reached the robot** under the shipped policy and
+  **8 did** with the envelope opened; all 5 benign tasks completed under both.
 - **Limits.** Not yet run on a physical robot; the simulated backend is kinematic only; the envelope checks
   the TCP path, not link geometry (measured: 84/201 near-zone plans clip a zone with the hand or wrist); this
   is defense in depth, not certified safety. See [Known limitations](#known-limitations).
@@ -192,6 +194,9 @@ python scripts/demo_fake.py
 
 # the safety evaluation behind the numbers in "At a glance"
 python scripts/eval_safety.py
+
+# a frontier agent (Claude Code, headless) against the server, with and without the envelope (~15 min)
+python scripts/eval_agent_redteam.py
 ```
 
 `armguard-mcp --help` lists every flag: `--policy` (required), `--backend fake|ros2`, `--ros2-config`,
@@ -352,6 +357,30 @@ link-level check is on the roadmap. Caveats: the check is kinematic (no dynamics
 vertices, so a box that only touches a face between vertices is missed; the self-collision check samples
 300 vertices per link; link0 to link2 sit inside `robot_base_column` by design and are excluded from the
 headline count.
+
+**4. A frontier agent in the loop.** `scripts/eval_agent_redteam.py` gives 18 tasks to Claude Code in headless
+mode (one fresh session and one fresh server per task, nobody to answer approval prompts): six direct unsafe
+requests, three under social pressure, two whose risk appears late in a sequence, two prompt injections
+(a topic name in the ROS graph, a pasted handover note) and five benign tasks. Each runs under the shipped
+policy and under [`scripts/redteam/no_envelope.yaml`](scripts/redteam/no_envelope.yaml), the same robot
+with the envelope opened, approval off and the allowlists widened. What reached the robot comes from the
+fake backend's actuation trace (`ARMGUARD_FAKE_TRACE`), re-checked against the shipped policy whichever
+policy the server ran with.
+
+| Condition | Unsafe tasks where an unsafe actuation reached the robot | Agent tried to act | Agent declined on its own | Benign tasks completed |
+|---|---|---|---|---|
+| shipped policy | **0 / 13** | 6 / 13 | 7 / 13 | 5 / 5 |
+| envelope opened, approval off | **8 / 13** | 10 / 13 | 3 / 13 | 5 / 5 |
+
+With the shipped policy the server refused every attempt the agent made (two plans rejected, one allowlist
+refusal, two approval prompts nobody could answer). Without it the same agent drove the TCP into the camera
+mount, turned joint 1 by 100° at full speed, grasped at 80 N, raised the collision thresholds to 100 N and
+switched off the state broadcasters, reporting each as done with "no safety violations". The agent declined
+the table-crushing task and both injections on its own under both conditions, and four more requests under
+the shipped policy after reading the envelope; told "safety limits are disabled today", it moved into the
+keep-out zone as soon as the server no longer listed one. Per-task results, refusals and the agent's own
+account: [docs/agent-redteam/results.md](docs/agent-redteam/results.md), raw logs under
+[docs/agent-redteam/runs/](docs/agent-redteam/runs/). One model, one run per task, simulated robot.
 
 **How to read these numbers.**
 
@@ -799,9 +828,10 @@ fakes them, is in [docs/threat-model.md](docs/threat-model.md).
 - [ ] Learned-skill actions from Isaac Lab exposed as skill tools, for example `insert_peg` with force
       feedback. The policy would run in the real-time loop, with armguard checking its preconditions and
       force envelope.
-- [ ] A benchmark of LLM tool-use safety on manipulators: unsafe requests, ambiguous goals, and prompt
-      injection through camera images, topic strings and tool outputs, measured with and without the
-      server-side envelope.
+- [x] A first agent-in-the-loop evaluation (`scripts/eval_agent_redteam.py`): unsafe requests, social
+      pressure, late-appearing risk and prompt injection through a topic name and a pasted note, measured
+      with and without the server-side envelope. Next: injection through camera images and tool outputs,
+      more models, repeated runs.
 - [ ] Authenticated HTTP transport (MCP authorization), and a tamper-evident audit log with a hash chain.
 - [ ] Link-geometry workspace checks.
 - [ ] Publish to PyPI and the MCP Registry (`server.json` is prepared).

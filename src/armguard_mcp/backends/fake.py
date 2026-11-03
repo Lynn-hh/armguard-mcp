@@ -10,7 +10,9 @@ simple force threshold.
 from __future__ import annotations
 
 import itertools
+import json
 import math
+import os
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -111,6 +113,11 @@ class FakeBackend(RobotBackend):
         self._collision_torque_nm = 30.0
         self._started = False
         self._snapshots = 0
+        # Test instrumentation, off unless the environment sets it (scripts/eval_agent_redteam.py):
+        # ARMGUARD_FAKE_TRACE appends one JSON line per actuation that reaches this backend, and
+        # ARMGUARD_FAKE_EXTRA_TOPICS (comma-separated) adds topics to the fake ROS graph.
+        self._trace_path = os.environ.get("ARMGUARD_FAKE_TRACE") or None
+        self._extra_topics = [t for t in os.environ.get("ARMGUARD_FAKE_EXTRA_TOPICS", "").split(",") if t]
         self._controllers = {
             "joint_state_broadcaster": _Controller(
                 "joint_state_broadcaster", "joint_state_broadcaster/JointStateBroadcaster", "active"
@@ -181,6 +188,13 @@ class FakeBackend(RobotBackend):
         self._q = [float(v) for v in q]
 
     # --- lifecycle ---------------------------------------------------------------------
+    def _trace(self, event: str, **fields: object) -> None:
+        """Append an actuation record when ``ARMGUARD_FAKE_TRACE`` is set (test instrumentation)."""
+        if self._trace_path is None:
+            return
+        with open(self._trace_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"event": event, "t": time.time(), **fields}) + "\n")
+
     async def start(self) -> None:
         self._started = True
 
@@ -240,6 +254,7 @@ class FakeBackend(RobotBackend):
             raise BackendFailed(f"unknown controller(s): {unknown}")
         if self._busy:
             raise BackendFailed("cannot switch controllers while a trajectory is executing")
+        self._trace("switch_controllers", activate=list(activate), deactivate=list(deactivate))
         new_state = {n: c.state for n, c in self._controllers.items()}
         for n in deactivate:
             new_state[n] = "inactive"
@@ -487,6 +502,16 @@ class FakeBackend(RobotBackend):
             raise BackendFailed(f"robot is {dev:.4f} rad away from the plan's start state")
         # Like a JointTrajectoryController, start from the actual state (within the tolerance).
         plan = plan.model_copy(update={"waypoints": [list(self._q), *plan.waypoints[1:]]})
+        self._trace(
+            "execute",
+            plan_id=plan.plan_id,
+            kind=plan.kind,
+            waypoints=plan.waypoints,
+            time_from_start=plan.time_from_start,
+            duration_s=plan.duration_s,
+            velocity_scaling=plan.velocity_scaling,
+            acceleration_scaling=plan.acceleration_scaling,
+        )
 
         self._busy = True
         self._stop_requested = False
@@ -528,6 +553,14 @@ class FakeBackend(RobotBackend):
 
     def _finish(self, success: bool, message: str, max_force: float, aborted: bool) -> ExecutionResult:
         self._dq = [0.0] * 7
+        self._trace(
+            "execute_done",
+            success=success,
+            message=message,
+            max_force_n=max_force,
+            aborted=aborted,
+            final=list(self._q),
+        )
         return ExecutionResult(
             success=success,
             message=message,
@@ -573,6 +606,7 @@ class FakeBackend(RobotBackend):
             raise BackendFailed(f"width {width} outside [0, {self.gripper_max_width}] m")
         if self.object_width is not None and self._grasped and width < self.object_width:
             raise BackendFailed("move blocked by grasped object; open the gripper first")
+        self._trace("gripper_move", width_m=width, speed_mps=speed)
         await self._gripper_travel(width, speed, "gripper move")
         self._gripper_width = width
         self._grasped = False
@@ -582,6 +616,7 @@ class FakeBackend(RobotBackend):
         self, width: float, force: float, speed: float, epsilon_inner: float, epsilon_outer: float
     ) -> GripperState:
         final = self.object_width if self.object_width is not None else 0.0
+        self._trace("gripper_grasp", width_m=width, force_n=force, speed_mps=speed)
         await self._gripper_travel(final, speed, "gripper grasp")
         self._gripper_width = final
         self._grasped = (
@@ -608,6 +643,7 @@ class FakeBackend(RobotBackend):
     async def set_collision_thresholds(self, force_n: float, torque_nm: float) -> None:
         if self._busy:
             raise BackendFailed("cannot change collision thresholds while moving")
+        self._trace("set_collision_thresholds", force_n=force_n, torque_nm=torque_nm)
         self._collision_force_n = force_n
         self._collision_torque_nm = torque_nm
 
@@ -635,6 +671,7 @@ class FakeBackend(RobotBackend):
                 "/tf",
                 "/tf_static",
                 *self.camera_topics,
+                *self._extra_topics,
             ],
             services=[
                 "/controller_manager/list_controllers",
