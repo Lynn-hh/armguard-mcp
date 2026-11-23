@@ -63,19 +63,24 @@ The bundled policy is for the simulated robot only: `--backend ros2` always requ
 
 ## At a glance
 
-- **Problem.** An LLM agent that can call robot tools can be wrong, or be steered by a prompt injection
-  hidden in an image or a topic string. One bad tool call moves a real arm.
-- **Approach.** The MCP server checks every plan against a policy file *before* anything moves: joint
+Reviewing this project? The full write-up, organized as overview, safety approach, evidence and
+limitations, is [docs/preventing-irreversible-actions.md](docs/preventing-irreversible-actions.md).
+
+- **Project overview.** armguard-mcp lets an LLM agent operate a robot arm through MCP tools. An agent
+  that can call robot tools can be wrong, or be steered by a prompt injection hidden in an image or a
+  topic string, and one bad tool call moves a real arm that cannot undo the motion.
+- **Safety approach.** The MCP server checks every plan against a policy file *before* anything moves: joint
   limits, workspace box, keep-out zones, step and speed caps, force limits, allowlists and rate limits.
   Motion outside the envelope needs a human to approve it through MCP elicitation, and a software e-stop
   and an audit log sit on top.
-- **Results** (simulated FR3, [reproducible with one command](#evaluation)): all **23/23 unsafe requests**
+- **Supporting evidence** (simulated FR3, [reproducible with one command](#evaluation)): all **23/23 unsafe requests**
   in the evaluation suite were refused, clamped, rate-limited or aborted, and **no unintended command reached the
   robot**. **1000/1000 random safe moves** executed, with none leaving the envelope. Planning with the full
   safety check takes a median of **~16 ms** per call. With a **frontier agent in the loop** (Claude Code,
   13 tasks with an unsafe intent), **0 unsafe actuations reached the robot** under the shipped policy and
-  **8 did** with the envelope opened; all 5 benign tasks completed under both.
-- **Limits.** Not yet run on a physical robot; the simulated backend is kinematic only; the envelope checks
+  **8 did** with the envelope opened; all 5 benign tasks completed under both
+  ([results and raw logs](docs/agent-redteam/results.md)).
+- **Limitations.** Not yet run on a physical robot; the simulated backend is kinematic only; the envelope checks
   the TCP path, not link geometry (measured: 84/201 near-zone plans clip a zone with the hand or wrist); this
   is defense in depth, not certified safety. See [Known limitations](#known-limitations).
 
@@ -833,8 +838,7 @@ fakes them, is in [docs/threat-model.md](docs/threat-model.md).
       with and without the server-side envelope. Next: injection through camera images and tool outputs,
       more models, repeated runs.
 - [ ] Authenticated HTTP transport (MCP authorization), and a tamper-evident audit log with a hash chain.
-- [ ] Link-geometry workspace checks.
-- [ ] Publish to PyPI and the MCP Registry (`server.json` is prepared).
+- [x] Publish to PyPI and the MCP Registry.
 
 ## Citation
 
